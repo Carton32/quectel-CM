@@ -1,3 +1,19 @@
+/******************************************************************************
+  @file    MPQMUX.c
+  @brief   QMI mux.
+
+  DESCRIPTION
+  Connectivity Management Tool for USB network adapter of Quectel wireless cellular modules.
+
+  INITIALIZATION AND SEQUENCING REQUIREMENTS
+  None.
+
+  ---------------------------------------------------------------------------
+  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Quectel Wireless Solution Proprietary and Confidential.
+  ---------------------------------------------------------------------------
+******************************************************************************/
+
 #include "QMIThread.h"
 static char line[1024];
 static pthread_mutex_t dumpQMIMutex = PTHREAD_MUTEX_INITIALIZER;
@@ -13,6 +29,7 @@ typedef struct {
 
 #define qmi_name_item(type) {type, #type}
 
+#if 0
 static const QMI_NAME_T qmi_IFType[] = {
 {USB_CTL_MSG_TYPE_QMI, "USB_CTL_MSG_TYPE_QMI"},
 };
@@ -38,6 +55,7 @@ qmi_name_item(QMICTL_FLAG_REQUEST),
 qmi_name_item(QMICTL_FLAG_RESPONSE),
 qmi_name_item(QMICTL_FLAG_INDICATION),
 };
+#endif
 
 static const QMI_NAME_T qmux_ctl_QMICTLType[] = {
 // QMICTL Type
@@ -188,6 +206,8 @@ qmi_name_item(QMINAS_SET_TECHNOLOGY_PREF_REQ), //          0x002A
 qmi_name_item(QMINAS_SET_TECHNOLOGY_PREF_RESP), //         0x002A
 qmi_name_item(QMINAS_GET_RF_BAND_INFO_REQ), //             0x0031
 qmi_name_item(QMINAS_GET_RF_BAND_INFO_RESP), //            0x0031
+qmi_name_item(QMINAS_GET_CELL_LOCATION_INFO_REQ),
+qmi_name_item(QMINAS_GET_CELL_LOCATION_INFO_RESP),
 qmi_name_item(QMINAS_GET_PLMN_NAME_REQ), //                0x0044
 qmi_name_item(QMINAS_GET_PLMN_NAME_RESP), //               0x0044
 qmi_name_item(QUECTEL_PACKET_TRANSFER_START_IND), //                0X100
@@ -195,6 +215,9 @@ qmi_name_item(QUECTEL_PACKET_TRANSFER_END_IND), //               0X101
 qmi_name_item(QMINAS_GET_SYS_INFO_REQ), //                 0x004D
 qmi_name_item(QMINAS_GET_SYS_INFO_RESP), //                0x004D
 qmi_name_item(QMINAS_SYS_INFO_IND), //                     0x004D
+qmi_name_item(QMINAS_GET_SIG_INFO_REQ),
+qmi_name_item(QMINAS_GET_SIG_INFO_RESP),
+
 };
 
 static const QMI_NAME_T qmux_wms_Type[] = {
@@ -233,6 +256,9 @@ qmi_name_item(QMIWDS_ADMIN_SET_QMAP_SETTINGS_REQ), //    0x002B
 qmi_name_item(QMIWDS_ADMIN_SET_QMAP_SETTINGS_RESP), //   0x002B
 qmi_name_item(QMIWDS_ADMIN_GET_QMAP_SETTINGS_REQ), //    0x002C
 qmi_name_item(QMIWDS_ADMIN_GET_QMAP_SETTINGS_RESP), //   0x002C
+qmi_name_item(QMI_WDA_SET_LOOPBACK_CONFIG_REQ), //	 0x002F
+qmi_name_item(QMI_WDA_SET_LOOPBACK_CONFIG_RESP), //	 0x002F
+qmi_name_item(QMI_WDA_SET_LOOPBACK_CONFIG_IND), //	 0x002F
 };
 
 static const QMI_NAME_T qmux_uim_Type[] = {
@@ -336,7 +362,7 @@ void dump_ctl(PQCQMICTL_MSG_HDR CTLHdr) {
 
 int dump_qmux(QMI_SERVICE_TYPE serviceType, PQCQMUX_HDR QMUXHdr) {
     PQCQMUX_MSG_HDR QMUXMsgHdr = (PQCQMUX_MSG_HDR) (QMUXHdr + 1);
-    CHAR *tag;
+    const char *tag;
 
     //dbg("QCQMUX--------------------------------------------\n");
     switch (QMUXHdr->CtlFlags&QMUX_CTL_FLAG_MASK_TYPE) {
@@ -359,6 +385,7 @@ int dump_qmux(QMI_SERVICE_TYPE serviceType, PQCQMUX_HDR QMUXHdr) {
             QMUX_NAME(qmux_nas_Type, le16_to_cpu(QMUXMsgHdr->Type), tag));
         break;
         case QMUX_TYPE_WDS:
+        case QMUX_TYPE_WDS_IPV6:
             dbg("Type:               %04x\t%s\n", le16_to_cpu(QMUXMsgHdr->Type),
             QMUX_NAME(qmux_wds_Type, le16_to_cpu(QMUXMsgHdr->Type), tag));
         break;

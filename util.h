@@ -1,23 +1,17 @@
-/*
- * Copyright (C) 2010 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**  
+  @file
+  util.h
+
+  @brief
+  This file provides the definitions, and declares some common APIs for list-algorithm.
+
  */
 
 #ifndef _UTILS_H_
 #define _UTILS_H_
 
 #include <stddef.h>
+#include <glob.h>
 
 struct listnode
 {
@@ -51,4 +45,8 @@ void list_remove(struct listnode *item);
 
 int epoll_register(int  epoll_fd, int  fd, unsigned int events);
 int epoll_deregister(int  epoll_fd, int  fd);
+const char * get_time(void);
+unsigned long clock_msec(void);
+pid_t getpid_by_pdp(int, const char*);
+
 #endif

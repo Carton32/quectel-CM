@@ -1,3 +1,18 @@
+/******************************************************************************
+  @file    quectel-qmi-proxy.c
+  @brief   The qmi proxy.
+
+  DESCRIPTION
+  Connectivity Management Tool for USB network adapter of Quectel wireless cellular modules.
+
+  INITIALIZATION AND SEQUENCING REQUIREMENTS
+  None.
+
+  ---------------------------------------------------------------------------
+  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Quectel Wireless Solution Proprietary and Confidential.
+  ---------------------------------------------------------------------------
+******************************************************************************/
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -7,22 +22,80 @@
 #include <stddef.h>
 #include <fcntl.h>
 #include <pthread.h>
-#include <sys/epoll.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
 #include <linux/un.h>
+#include <linux/if.h>
+#include <dirent.h>
+#include <signal.h>
+#include <endian.h>
+#include <inttypes.h>
 
-typedef unsigned char uint8_t;
-typedef unsigned short uint16_t;
-typedef unsigned int uint32_t;
+#ifndef MIN
+#define MIN(a, b)	((a) < (b)? (a): (b))
+#endif
 
-#define cpu_to_le16(x) (x)
-#define cpu_to_le32(x) (x)
-#define le16_to_cpu(x) (x)
-#define le32_to_cpu(x) (x)
+#ifndef htole32 
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+#define htole16(x) (uint16_t)(x)
+#define le16toh(x) (uint16_t)(x)
+#define letoh16(x) (uint16_t)(x)
+#define htole32(x) (uint32_t)(x)
+#define le32toh(x) (uint32_t)(x)
+#define letoh32(x) (uint32_t)(x)
+#define htole64(x) (uint64_t)(x)
+#define le64toh(x) (uint64_t)(x)
+#define letoh64(x) (uint64_t)(x)
+#else
+static __inline uint16_t __bswap16(uint16_t __x) {
+    return (__x<<8) | (__x>>8);
+}
 
-#define dprintf(fmt, arg...) do { printf(fmt, ##arg); } while(0)
+static __inline uint32_t __bswap32(uint32_t __x) {
+    return (__x>>24) | (__x>>8&0xff00) | (__x<<8&0xff0000) | (__x<<24);
+}
+
+static __inline uint64_t __bswap64(uint64_t __x) {
+    return (__bswap32(__x)+0ULL<<32) | (__bswap32(__x>>32));
+}
+
+#define htole16(x) __bswap16(x)
+#define le16toh(x) __bswap16(x)
+#define letoh16(x) __bswap16(x)
+#define htole32(x) __bswap32(x)
+#define le32toh(x) __bswap32(x)
+#define letoh32(x) __bswap32(x)
+#define htole64(x) __bswap64(x)
+#define le64toh(x) __bswap64(x)
+#define letoh64(x) __bswap64(x)
+#endif
+#endif
+
+const char * get_time(void) {
+    static char time_buf[128];
+    struct timeval  tv;
+    time_t time;
+    suseconds_t millitm;
+    struct tm *ti;
+
+    gettimeofday (&tv, NULL);
+
+    time= tv.tv_sec;
+    millitm = (tv.tv_usec + 500) / 1000;
+
+    if (millitm == 1000) {
+        ++time;
+        millitm = 0;
+    }
+
+    ti = localtime(&time);
+    sprintf(time_buf, "[%02d-%02d_%02d:%02d:%02d:%03d]", ti->tm_mon+1, ti->tm_mday, ti->tm_hour, ti->tm_min, ti->tm_sec, (int)millitm);
+    return time_buf;
+}
+
+#define dprintf(fmt, args...) do { fprintf(stdout, "%s " fmt, get_time(), ##args); } while(0);
 #define SYSCHECK(c) do{if((c)<0) {dprintf("%s %d error: '%s' (code: %d)\n", __func__, __LINE__, strerror(errno), errno); return -1;}}while(0)
 #define cfmakenoblock(fd) do{fcntl(fd, F_SETFL, fcntl(fd,F_GETFL) | O_NONBLOCK);}while(0)
 
@@ -149,42 +222,6 @@ typedef struct _QCQMICTL_MSG_HDR_RESP
                             // QMI_ERR_FAULT
 } __attribute__ ((packed)) QCQMICTL_MSG_HDR_RESP, *PQCQMICTL_MSG_HDR_RESP;
 
-typedef struct _QMICTL_GET_VERSION_REQ_MSG
-{
-   uint8_t  CtlFlags;        // QMICTL_FLAG_REQUEST
-   uint8_t  TransactionId;
-   uint16_t QMICTLType;      // QMICTL_GET_VERSION_REQ
-   uint16_t Length;          // 0
-   uint8_t  TLVType;         // QCTLV_TYPE_REQUIRED_PARAMETER
-   uint16_t TLVLength;       // var
-   uint8_t  QMUXTypes;       // List of one byte QMUX_TYPE values
-                           // 0xFF returns a list of versions for all
-                           // QMUX_TYPEs implemented on the device
-} __attribute__ ((packed)) QMICTL_GET_VERSION_REQ_MSG, *PQMICTL_GET_VERSION_REQ_MSG;
-
-typedef struct _QMUX_TYPE_VERSION_STRUCT
-{
-   uint8_t  QMUXType;
-   uint16_t MajorVersion;
-   uint16_t MinorVersion;
-} __attribute__ ((packed)) QMUX_TYPE_VERSION_STRUCT, *PQMUX_TYPE_VERSION_STRUCT;
-
-typedef struct _QMICTL_GET_VERSION_RESP_MSG
-{
-   uint8_t  CtlFlags;        // QMICTL_FLAG_RESPONSE
-   uint8_t  TransactionId;
-   uint16_t QMICTLType;      // QMICTL_GET_VERSION_RESP
-   uint16_t Length;
-   uint8_t  TLVType;         // QCTLV_TYPE_RESULT_CODE
-   uint16_t TLVLength;       // 0x0004
-   uint16_t QMIResult;
-   uint16_t QMIError;
-   uint8_t  TLV2Type;        // QCTLV_TYPE_REQUIRED_PARAMETER
-   uint16_t TLV2Length;      // var
-   uint8_t  NumElements;     // Num of QMUX_TYPE_VERSION_STRUCT
-   QMUX_TYPE_VERSION_STRUCT TypeVersion[0];
-} __attribute__ ((packed)) QMICTL_GET_VERSION_RESP_MSG, *PQMICTL_GET_VERSION_RESP_MSG;
-
 
 typedef struct _QMICTL_MSG
 {
@@ -197,8 +234,8 @@ typedef struct _QMICTL_MSG
       // QMICTL Message
       //QMICTL_SET_INSTANCE_ID_REQ_MSG               SetInstanceIdReq;
       //QMICTL_SET_INSTANCE_ID_RESP_MSG              SetInstanceIdRsp;
-      QMICTL_GET_VERSION_REQ_MSG                   GetVersionReq;
-      QMICTL_GET_VERSION_RESP_MSG                  GetVersionRsp;
+      //QMICTL_GET_VERSION_REQ_MSG                   GetVersionReq;
+      //QMICTL_GET_VERSION_RESP_MSG                  GetVersionRsp;
       QMICTL_GET_CLIENT_ID_REQ_MSG                 GetClientIdReq;
       QMICTL_GET_CLIENT_ID_RESP_MSG                GetClientIdRsp;
       //QMICTL_RELEASE_CLIENT_ID_REQ_MSG             ReleaseClientIdReq;
@@ -238,48 +275,8 @@ typedef struct _QCQMUX_MSG_HDR_RESP
                             // QMI_ERR_FAULT
 } __attribute__ ((packed)) QCQMUX_MSG_HDR_RESP, *PQCQMUX_MSG_HDR_RESP;
 
-typedef struct _QMIWDS_ADMIN_SET_DATA_FORMAT
-{
-   uint16_t Type;             // QMUX type 0x0000
-   uint16_t Length;
-} __attribute__ ((packed)) QMIWDS_ADMIN_SET_DATA_FORMAT, *PQMIWDS_ADMIN_SET_DATA_FORMAT;
-
-typedef struct _QMIWDS_ADMIN_SET_DATA_FORMAT_TLV_QOS
-{
-   uint8_t  TLVType;
-   uint16_t TLVLength;
-   uint8_t  QOSSetting;
-} __attribute__ ((packed)) QMIWDS_ADMIN_SET_DATA_FORMAT_TLV_QOS, *PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV_QOS;
-
-typedef struct _QMIWDS_ADMIN_SET_DATA_FORMAT_TLV
-{
-   uint8_t  TLVType;
-   uint16_t TLVLength;
-   uint32_t  Value;
-} __attribute__ ((packed)) QMIWDS_ADMIN_SET_DATA_FORMAT_TLV, *PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV;
-
-typedef struct _QMIWDS_ENDPOINT_TLV
-{
-   uint8_t  TLVType;
-   uint16_t TLVLength;
-   uint32_t  ep_type;
-   uint32_t  iface_id;
-} __attribute__ ((packed)) QMIWDS_ENDPOINT_TLV, *PQMIWDS_ENDPOINT_TLV;
-
-typedef struct _QMIWDS_ADMIN_SET_DATA_FORMAT_REQ_MSG
-{
-    uint8_t  CtlFlags;      // 0: single QMUX Msg; 1:
-    uint16_t TransactionId;
-    uint16_t Type;
-    uint16_t Length;
-    QMIWDS_ADMIN_SET_DATA_FORMAT_TLV_QOS QosDataFormatTlv;
-    QMIWDS_ADMIN_SET_DATA_FORMAT_TLV UnderlyingLinkLayerProtocolTlv;
-    QMIWDS_ADMIN_SET_DATA_FORMAT_TLV UplinkDataAggregationProtocolTlv;
-    QMIWDS_ADMIN_SET_DATA_FORMAT_TLV DownlinkDataAggregationProtocolTlv;
-    QMIWDS_ADMIN_SET_DATA_FORMAT_TLV DownlinkDataAggregationMaxDatagramsTlv;
-    QMIWDS_ADMIN_SET_DATA_FORMAT_TLV DownlinkDataAggregationMaxSizeTlv;
-    QMIWDS_ENDPOINT_TLV epTlv;
-} __attribute__ ((packed)) QMIWDS_ADMIN_SET_DATA_FORMAT_REQ_MSG, *PQMIWDS_ADMIN_SET_DATA_FORMAT_REQ_MSG;
+//#define QUECTEL_QMI_MERGE
+typedef uint32_t UINT;
 
 typedef struct _QCQMUX_TLV
 {
@@ -295,7 +292,7 @@ typedef struct _QMUX_MSG
       // Message Header
       QCQMUX_MSG_HDR                           QMUXMsgHdr;
       QCQMUX_MSG_HDR_RESP                      QMUXMsgHdrResp;
-      QMIWDS_ADMIN_SET_DATA_FORMAT_REQ_MSG      SetDataFormatReq;
+      //QMIWDS_ADMIN_SET_DATA_FORMAT_REQ_MSG      SetDataFormatReq;
     };
 } __attribute__ ((packed)) QMUX_MSG, *PQMUX_MSG;
 
@@ -380,7 +377,7 @@ struct qlistnode
 
 typedef struct {
     struct qlistnode qnode;
-    uint8_t ClientFd;
+    int ClientFd;
     QCQMIMSG qmi[0];
 } QMI_PROXY_MSG;
 
@@ -394,9 +391,27 @@ typedef struct {
 typedef struct {
     struct qlistnode qnode;
     struct qlistnode client_qnode;
-    uint8_t ClientFd;
+    int ClientFd;
     unsigned AccessTime;
 } QMI_PROXY_CONNECTION;
+
+#ifdef QUECTEL_QMI_MERGE
+#define MERGE_PACKET_IDENTITY 0x2c7c
+#define MERGE_PACKET_VERSION 0x0001
+#define MERGE_PACKET_MAX_PAYLOAD_SIZE 56
+typedef struct __QMI_MSG_HEADER {
+    uint16_t idenity;
+    uint16_t version;
+    uint16_t cur_len;
+    uint16_t total_len;
+} QMI_MSG_HEADER;
+
+typedef struct __QMI_MSG_PACKET {
+    QMI_MSG_HEADER header;
+    uint16_t len;
+    char buf[4096];
+} QMI_MSG_PACKET;
+#endif
 
 static void qlist_init(struct qlistnode *node)
 {
@@ -418,37 +433,50 @@ static void qlist_remove(struct qlistnode *item)
     item->prev->next = item->next;
 }
 
+static int qmi_proxy_quit = 0;
+static pthread_t thread_id = 0;
 static int cdc_wdm_fd = -1;
 static int qmi_proxy_server_fd = -1;
 static struct qlistnode qmi_proxy_connection;
 static struct qlistnode qmi_proxy_ctl_msg;
-static PQCQMIMSG s_pCtlReq;
-static PQCQMIMSG s_pCtlRsq;
-static pthread_mutex_t s_ctlmutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t s_ctlcond = PTHREAD_COND_INITIALIZER;
+static int verbose_debug = 0;
+static int modem_reset_flag = 0;
+static int qmi_sync_done = 0;
+static uint8_t qmi_buf[4096];
 
-static void setTimespecRelative(struct timespec *p_ts, long long msec)
-{
-    struct timeval tv;
+#ifdef QUECTEL_QMI_MERGE
+static int merge_qmi_rsp_packet(void *buf, ssize_t *src_size) {
+    static QMI_MSG_PACKET s_QMIPacket;
+    QMI_MSG_HEADER *header = NULL;
+    ssize_t size = *src_size;
 
-    gettimeofday(&tv, (struct timezone *) NULL);
+    if((uint16_t)size < sizeof(QMI_MSG_HEADER))
+        return -1;
 
-    /* what's really funny about this is that I know
-       pthread_cond_timedwait just turns around and makes this
-       a relative time again */
-    p_ts->tv_sec = tv.tv_sec + (msec / 1000);
-    p_ts->tv_nsec = (tv.tv_usec + (msec % 1000) * 1000L ) * 1000L;
-}
+    header = (QMI_MSG_HEADER *)buf;
+    if(le16toh(header->idenity) != MERGE_PACKET_IDENTITY || le16toh(header->version) != MERGE_PACKET_VERSION || le16toh(header->cur_len) > le16toh(header->total_len)) 
+        return -1;
 
-static int pthread_cond_timeout_np(pthread_cond_t *cond, pthread_mutex_t * mutex, unsigned msecs) {
-    if (msecs != 0) {
-        struct timespec ts;
-        setTimespecRelative(&ts, msecs);
-        return pthread_cond_timedwait(cond, mutex, &ts);
-    } else {
-        return pthread_cond_wait(cond, mutex);
+    if(le16toh(header->cur_len) == le16toh(header->total_len)) {
+        *src_size = le16toh(header->total_len);
+        memcpy(buf, buf + sizeof(QMI_MSG_HEADER), *src_size);
+        s_QMIPacket.len = 0;  
+        return 0;
+    } 
+
+    memcpy(s_QMIPacket.buf + s_QMIPacket.len, buf + sizeof(QMI_MSG_HEADER), le16toh(header->cur_len));
+    s_QMIPacket.len += le16toh(header->cur_len);
+
+    if (le16toh(header->cur_len) < MERGE_PACKET_MAX_PAYLOAD_SIZE || s_QMIPacket.len >= le16toh(header->total_len)) { 
+       memcpy(buf, s_QMIPacket.buf, s_QMIPacket.len);      
+       *src_size = s_QMIPacket.len;
+       s_QMIPacket.len = 0;
+       return 0;           
     }
+
+    return -1;
 }
+#endif
 
 static int create_local_server(const char *name) {
     int sockfd = -1;
@@ -468,7 +496,7 @@ static int create_local_server(const char *name) {
     SYSCHECK(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr,sizeof(reuse_addr)));
     if(bind(sockfd, (struct sockaddr *)&sockaddr, alen) < 0) {
         close(sockfd);
-        dprintf("%s bind %s errno: %d (%s)\n", __func__, name, errno, strerror(errno));
+        dprintf("bind %s errno: %d (%s)\n", name, errno, strerror(errno));
         return -1;
     }
 
@@ -566,26 +594,33 @@ static void release_client_id(QMI_PROXY_CONNECTION *qmi_con, PQMICTL_RELEASE_CLI
     }
 }
 
-static int verbose_debug = 0;
+static void dump_qmi(PQCQMIMSG pQMI, int fd, const char flag)
+{
+    if (verbose_debug)
+    {
+        unsigned i;
+        unsigned size = le16toh(pQMI->QMIHdr.Length) + 1;
+        printf("%c %d %u: ", flag, fd, size);
+        if (size > 16)
+            size = 16;
+        for (i = 0; i < size; i++)
+            printf("%02x ", ((uint8_t *)pQMI)[i]);
+        printf("\n");
+    }
+}
+
 static int send_qmi_to_cdc_wdm(PQCQMIMSG pQMI) {
     struct pollfd pollfds[]= {{cdc_wdm_fd, POLLOUT, 0}};
     ssize_t ret = 0;
 
     do {
         ret = poll(pollfds, sizeof(pollfds)/sizeof(pollfds[0]), 5000);
-    } while ((ret < 0) && (errno == EINTR));
+    } while (ret == -1 && errno == EINTR && qmi_proxy_quit == 0);
 
     if (pollfds[0].revents & POLLOUT) {
-        ssize_t size = le16_to_cpu(pQMI->QMIHdr.Length) + 1;
+        ssize_t size = le16toh(pQMI->QMIHdr.Length) + 1;
         ret = write(cdc_wdm_fd, pQMI, size);
-        if (verbose_debug)
-        {
-            ssize_t i;
-            printf("w %d %zd: ", cdc_wdm_fd, ret);
-            for (i = 0; i < 16; i++)
-                printf("%02x ", ((uint8_t *)pQMI)[i]);
-            printf("\n");
-        }
+        dump_qmi(pQMI, cdc_wdm_fd, 'w');
     }
 
     return ret;
@@ -597,47 +632,22 @@ static int send_qmi_to_client(PQCQMIMSG pQMI, int clientFd) {
 
     do {
         ret = poll(pollfds, sizeof(pollfds)/sizeof(pollfds[0]), 5000);
-    } while ((ret < 0) && (errno == EINTR));
+    } while (ret == -1 && errno == EINTR && qmi_proxy_quit == 0);
 
     if (pollfds[0].revents & POLLOUT) {
-        ssize_t size = le16_to_cpu(pQMI->QMIHdr.Length) + 1;
+        ssize_t size = le16toh(pQMI->QMIHdr.Length) + 1;
         ret = write(clientFd, pQMI, size);
-        if (verbose_debug)
-        {
-            ssize_t i;
-            printf("w %d %zd: ", clientFd, ret);
-            for (i = 0; i < 16; i++)
-                printf("%02x ", ((uint8_t *)pQMI)[i]);
-            printf("\n");
-        }
+        dump_qmi(pQMI, clientFd, 'w');
     }
 
     return ret;
 }
 
-
-static void recv_qmi(PQCQMIMSG pQMI, unsigned size) {
+static void recv_qmi_from_dev(PQCQMIMSG pQMI) {
     struct qlistnode *con_node, *client_node;
 
-    if (qmi_proxy_server_fd <= 0) {
-        pthread_mutex_lock(&s_ctlmutex);
-
-        if (s_pCtlReq != NULL) {
-            if (pQMI->QMIHdr.QMIType == QMUX_TYPE_CTL
-                && s_pCtlReq->CTLMsg.QMICTLMsgHdrRsp.TransactionId == pQMI->CTLMsg.QMICTLMsgHdrRsp.TransactionId) {
-                s_pCtlRsq = malloc(size);
-                memcpy(s_pCtlRsq, pQMI, size);
-                pthread_cond_signal(&s_ctlcond);
-            }
-            else if (pQMI->QMIHdr.QMIType != QMUX_TYPE_CTL
-                && s_pCtlReq->MUXMsg.QMUXMsgHdr.TransactionId == pQMI->MUXMsg.QMUXMsgHdr.TransactionId) {
-                s_pCtlRsq = malloc(size);
-                memcpy(s_pCtlRsq, pQMI, size);
-                pthread_cond_signal(&s_ctlcond);
-            }
-        }
-
-        pthread_mutex_unlock(&s_ctlmutex);
+    if (qmi_proxy_server_fd == -1) {
+        qmi_sync_done = 1;
     }
     else if (pQMI->QMIHdr.QMIType == QMUX_TYPE_CTL) {
         if (pQMI->CTLMsg.QMICTLMsgHdr.CtlFlags == QMICTL_CTL_FLAG_RSP) {            
@@ -650,10 +660,14 @@ static void recv_qmi(PQCQMIMSG pQMI, unsigned size) {
                     if (qmi_con->ClientFd == qmi_msg->ClientFd) {
                         send_qmi_to_client(pQMI, qmi_msg->ClientFd);
 
-                        if (pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType == QMICTL_GET_CLIENT_ID_RESP)
+                        if (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_GET_CLIENT_ID_RESP)
                             get_client_id(qmi_con, &pQMI->CTLMsg.GetClientIdRsp);                                                        
-                        else if (pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType == QMICTL_RELEASE_CLIENT_ID_RESP)
+                        else if ((le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_RELEASE_CLIENT_ID_RESP) ||
+                                (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_REVOKE_CLIENT_ID_IND)) {
                             release_client_id(qmi_con, &pQMI->CTLMsg.ReleaseClientIdRsp);
+                            if (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_REVOKE_CLIENT_ID_IND)
+                                modem_reset_flag = 1;
+                        }
                         else {
                         }
                     }
@@ -692,12 +706,17 @@ static void recv_qmi(PQCQMIMSG pQMI, unsigned size) {
     }
 }
 
-static int send_qmi(PQCQMIMSG pQMI, unsigned size, int clientfd) {
+static int recv_qmi_from_client(PQCQMIMSG pQMI, unsigned size, int clientfd) {
     if (qmi_proxy_server_fd <= 0) {
         send_qmi_to_cdc_wdm(pQMI);
     }
     else if (pQMI->QMIHdr.QMIType == QMUX_TYPE_CTL) {  
         QMI_PROXY_MSG *qmi_msg;
+
+        if (pQMI->CTLMsg.QMICTLMsgHdr.QMICTLType == QMICTL_SYNC_REQ) {
+            dprintf("do not allow client send QMICTL_SYNC_REQ\n");
+            return 0;
+        }
 
         if (qlist_empty(&qmi_proxy_ctl_msg))
             send_qmi_to_cdc_wdm(pQMI);
@@ -715,60 +734,10 @@ static int send_qmi(PQCQMIMSG pQMI, unsigned size, int clientfd) {
     return 0;
 }
 
-static int send_qmi_timeout(PQCQMIMSG pRequest, PQCQMIMSG *ppResponse, unsigned mseconds) {
-    int ret;
-
-    pthread_mutex_lock(&s_ctlmutex);
-
-    s_pCtlReq = pRequest;
-    s_pCtlRsq = NULL;
-    if (ppResponse) *ppResponse = NULL;
-
-    send_qmi_to_cdc_wdm(pRequest);
-    ret = pthread_cond_timeout_np(&s_ctlcond, &s_ctlmutex, mseconds);
-    if (!ret) {
-        if (s_pCtlRsq && ppResponse) {
-            *ppResponse = s_pCtlRsq;
-        } else if (s_pCtlRsq) {
-            free(s_pCtlRsq);
-        }
-    } else {
-        dprintf("%s ret=%d, errno: %d (%s)", __func__, ret, errno, strerror(errno));
-    }
-
-    s_pCtlReq = NULL;
-    pthread_mutex_unlock(&s_ctlmutex);
-
-    return ret;
-}
-
-PQCQMUX_TLV qmi_find_tlv (PQCQMIMSG pQMI, uint8_t TLVType) {
-    int Length = 0;
-
-    while (Length < le16_to_cpu(pQMI->MUXMsg.QMUXMsgHdr.Length)) {
-        PQCQMUX_TLV pTLV = (PQCQMUX_TLV)(&pQMI->MUXMsg.QMUXMsgHdr.payload[Length]);
-
-        //dprintf("TLV {%02x, %04x}\n", pTLV->Type, pTLV->Length);
-        if (pTLV->Type == TLVType) {
-            return pTLV;
-        }
-
-        Length += (le16_to_cpu((pTLV->Length)) + sizeof(QCQMUX_TLV));
-    }
-
-   return NULL;
-}
-
 static int qmi_proxy_init(void) {
     unsigned i;
-    int ret;
     QCQMIMSG _QMI;
     PQCQMIMSG pQMI = &_QMI;
-    PQCQMIMSG pRsp;
-    uint8_t TransactionId = 0xC1;
-    uint8_t WDAClientId = 0;
-    unsigned rx_urb_size = 0;
-    unsigned ep_type, iface_id;
 
     dprintf("%s enter\n", __func__);
 
@@ -779,182 +748,56 @@ static int qmi_proxy_init(void) {
     
     pQMI->CTLMsg.QMICTLMsgHdr.CtlFlags = QMICTL_FLAG_REQUEST;
 
+    qmi_sync_done = 0;
     for (i = 0; i < 10; i++) {
-        pQMI->CTLMsg.SyncReq.TransactionId = TransactionId++;    
+        pQMI->CTLMsg.SyncReq.TransactionId = i+1;    
         pQMI->CTLMsg.SyncReq.QMICTLType = QMICTL_SYNC_REQ;
         pQMI->CTLMsg.SyncReq.Length = 0;
 
-        pQMI->QMIHdr.Length = pQMI->CTLMsg.QMICTLMsgHdr.Length + sizeof(QCQMI_HDR) + sizeof(QCQMICTL_MSG_HDR) - 1;
+        pQMI->QMIHdr.Length = 
+            htole16(le16toh(pQMI->CTLMsg.QMICTLMsgHdr.Length) + sizeof(QCQMI_HDR) + sizeof(QCQMICTL_MSG_HDR) - 1);
 
-        ret = send_qmi_timeout(pQMI, NULL, 1000);
-        if (!ret)
+        if (send_qmi_to_cdc_wdm(pQMI) <= 0)
+            break;
+
+        sleep(1);
+        if (qmi_sync_done)
             break;
     }
 
-    if (ret)
-        goto qmi_proxy_init_fail;
+    dprintf("%s %s\n", __func__, qmi_sync_done ? "succful" : "fail");
+    return qmi_sync_done ? 0 : -1;
+}
 
-    pQMI->CTLMsg.GetVersionReq.TransactionId = TransactionId++;    
-    pQMI->CTLMsg.GetVersionReq.QMICTLType = QMICTL_GET_VERSION_REQ;
-    pQMI->CTLMsg.GetVersionReq.Length = 0x0004;
-    pQMI->CTLMsg.GetVersionReq.TLVType= QCTLV_TYPE_REQUIRED_PARAMETER;
-    pQMI->CTLMsg.GetVersionReq.TLVLength = 0x0001;
-    pQMI->CTLMsg.GetVersionReq.QMUXTypes = QMUX_TYPE_ALL;
-
-    pQMI->QMIHdr.Length = pQMI->CTLMsg.QMICTLMsgHdr.Length + sizeof(QCQMI_HDR) + sizeof(QCQMICTL_MSG_HDR) - 1;
-
-    ret = send_qmi_timeout(pQMI, &pRsp, 3000);
-    if (ret || (pRsp == NULL))
-        goto qmi_proxy_init_fail;
-
-    if (pRsp) {
-        uint8_t  NumElements = 0;
-        if (pRsp->CTLMsg.QMICTLMsgHdrRsp.QMUXResult ||pRsp->CTLMsg.QMICTLMsgHdrRsp.QMUXError) {
-            goto qmi_proxy_init_fail;
-        }
-
-        for (NumElements = 0; NumElements < pRsp->CTLMsg.GetVersionRsp.NumElements; NumElements++) {
-            dprintf("QMUXType = %02x Version = %d.%d\n",
-                pRsp->CTLMsg.GetVersionRsp.TypeVersion[NumElements].QMUXType,
-                pRsp->CTLMsg.GetVersionRsp.TypeVersion[NumElements].MajorVersion,
-                pRsp->CTLMsg.GetVersionRsp.TypeVersion[NumElements].MinorVersion);
-        }
-    }
-    free(pRsp);
-
-    pQMI->CTLMsg.GetClientIdReq.TransactionId = TransactionId++;    
-    pQMI->CTLMsg.GetClientIdReq.QMICTLType = QMICTL_GET_CLIENT_ID_REQ;
-    pQMI->CTLMsg.GetClientIdReq.Length = 0x0004;
-    pQMI->CTLMsg.GetClientIdReq.TLVType= QCTLV_TYPE_REQUIRED_PARAMETER;
-    pQMI->CTLMsg.GetClientIdReq.TLVLength = 0x0001;
-    pQMI->CTLMsg.GetClientIdReq.QMIType = QMUX_TYPE_WDS_ADMIN;
-
-    pQMI->QMIHdr.Length = pQMI->CTLMsg.QMICTLMsgHdr.Length + sizeof(QCQMI_HDR) + sizeof(QCQMICTL_MSG_HDR) - 1;
-
-    ret = send_qmi_timeout(pQMI, &pRsp, 3000);
-    if (ret || (pRsp == NULL))
-        goto qmi_proxy_init_fail;
-
-    if (pRsp) {
-        if (pRsp->CTLMsg.QMICTLMsgHdrRsp.QMUXResult ||pRsp->CTLMsg.QMICTLMsgHdrRsp.QMUXError) {
-            goto qmi_proxy_init_fail;
-        }
-
-        WDAClientId = pRsp->CTLMsg.GetClientIdRsp.ClientId;
-        dprintf("WDAClientId = %d\n", WDAClientId);
-    }
-    free(pRsp);
-
-    rx_urb_size = 16 * 1024; //must same as rx_urb_size defined in GobiNet&qmi_wwan driver
-    ep_type = 0x02;
-    iface_id = 0x04;
-
-    pQMI->QMIHdr.IFType   = USB_CTL_MSG_TYPE_QMI;
-    pQMI->QMIHdr.CtlFlags = 0x00;
-    pQMI->QMIHdr.QMIType  = QMUX_TYPE_WDS_ADMIN;
-    pQMI->QMIHdr.ClientId= WDAClientId;
-    
-    pQMI->MUXMsg.QMUXMsgHdr.CtlFlags = QMICTL_FLAG_REQUEST;
-    pQMI->MUXMsg.QMUXMsgHdr.TransactionId = TransactionId++;
-
-    pQMI->MUXMsg.SetDataFormatReq.Type = QMIWDS_ADMIN_SET_DATA_FORMAT_REQ;
-    pQMI->MUXMsg.SetDataFormatReq.Length = sizeof(QMIWDS_ADMIN_SET_DATA_FORMAT_REQ_MSG) - sizeof(QCQMUX_MSG_HDR);
-
-//Indicates whether the Quality of Service(QOS) data format is used by the client.
-    pQMI->MUXMsg.SetDataFormatReq.QosDataFormatTlv.TLVType = 0x10;
-    pQMI->MUXMsg.SetDataFormatReq.QosDataFormatTlv.TLVLength = cpu_to_le16(0x0001);
-    pQMI->MUXMsg.SetDataFormatReq.QosDataFormatTlv.QOSSetting = 0; /* no-QOS header */
-//Underlying Link Layer Protocol
-    pQMI->MUXMsg.SetDataFormatReq.UnderlyingLinkLayerProtocolTlv.TLVType = 0x11; 
-    pQMI->MUXMsg.SetDataFormatReq.UnderlyingLinkLayerProtocolTlv.TLVLength = cpu_to_le16(4);
-    pQMI->MUXMsg.SetDataFormatReq.UnderlyingLinkLayerProtocolTlv.Value = cpu_to_le32(0x02);     /* Set Ethernet  mode */
-//Uplink (UL) data aggregation protocol to be used for uplink data transfer.
-    pQMI->MUXMsg.SetDataFormatReq.UplinkDataAggregationProtocolTlv.TLVType = 0x12; 
-    pQMI->MUXMsg.SetDataFormatReq.UplinkDataAggregationProtocolTlv.TLVLength = cpu_to_le16(4);
-    pQMI->MUXMsg.SetDataFormatReq.UplinkDataAggregationProtocolTlv.Value = cpu_to_le32(0x05); //UL QMAP is enabled
-//Downlink (DL) data aggregation protocol to be used for downlink data transfer
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationProtocolTlv.TLVType = 0x13; 
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationProtocolTlv.TLVLength = cpu_to_le16(4);
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationProtocolTlv.Value = cpu_to_le32(0x05); //UL QMAP is enabled
-//Maximum number of datagrams in a single aggregated packet on downlink
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationMaxDatagramsTlv.TLVType = 0x15; 
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationMaxDatagramsTlv.TLVLength = cpu_to_le16(4);
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationMaxDatagramsTlv.Value = cpu_to_le32((rx_urb_size>2048)?(rx_urb_size/1024):1);
-//Maximum size in bytes of a single aggregated packet allowed on downlink
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationMaxSizeTlv.TLVType = 0x16; 
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationMaxSizeTlv.TLVLength = cpu_to_le16(4);
-    pQMI->MUXMsg.SetDataFormatReq.DownlinkDataAggregationMaxSizeTlv.Value = cpu_to_le32(rx_urb_size);
-//Peripheral End Point ID
-    pQMI->MUXMsg.SetDataFormatReq.epTlv.TLVType = 0x17; 
-    pQMI->MUXMsg.SetDataFormatReq.epTlv.TLVLength = cpu_to_le16(8);
-    pQMI->MUXMsg.SetDataFormatReq.epTlv.ep_type = cpu_to_le32(ep_type); // DATA_EP_TYPE_BAM_DMUX
-    pQMI->MUXMsg.SetDataFormatReq.epTlv.iface_id = cpu_to_le32(iface_id); 
-
-    pQMI->QMIHdr.Length = pQMI->MUXMsg.QMUXMsgHdr.Length + sizeof(QCQMI_HDR) + sizeof(QCQMUX_MSG_HDR) - 1;
-
-    ret = send_qmi_timeout(pQMI, &pRsp, 3000);
-    if (ret || (pRsp == NULL))
-        goto qmi_proxy_init_fail;
-
-    if (pRsp) {
-        PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV pFormat;
-        
-        if (pRsp->MUXMsg.QMUXMsgHdrResp.QMUXResult || pRsp->MUXMsg.QMUXMsgHdrResp.QMUXError) {
-            goto qmi_proxy_init_fail;
-        }
-
-        pFormat = (PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV)qmi_find_tlv(pRsp, 0x11);
-        if (pFormat)
-            dprintf("link_prot %d\n", pFormat->Value);
-        pFormat = (PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV)qmi_find_tlv(pRsp, 0x12);
-        if (pFormat)
-            dprintf("ul_data_aggregation_protoco %d\n", pFormat->Value);
-        pFormat = (PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV)qmi_find_tlv(pRsp, 0x13);
-        if (pFormat)
-            dprintf("dl_data_aggregation_protoco %d\n", pFormat->Value);
-        pFormat = (PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV)qmi_find_tlv(pRsp, 0x15);
-        if (pFormat)
-            dprintf("dl_data_aggregation_max_datagrams %d\n", pFormat->Value);
-        pFormat = (PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV)qmi_find_tlv(pRsp, 0x16);
-        if (pFormat)
-            dprintf("dl_data_aggregation_max_size %d\n", pFormat->Value);
-        pFormat = (PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV)qmi_find_tlv(pRsp, 0x17);
-        if (pFormat)
-            dprintf("ul_data_aggregation_max_datagrams %d\n", pFormat->Value);
-        pFormat = (PQMIWDS_ADMIN_SET_DATA_FORMAT_TLV)qmi_find_tlv(pRsp, 0x18);
-        if (pFormat)
-            dprintf("ul_data_aggregation_max_size %d\n", pFormat->Value);
-    }
-    free(pRsp);
-
-    qmi_proxy_server_fd = create_local_server("quectel-qmi-proxy");
-    printf("%s: qmi_proxy_server_fd = %d\n", __func__, qmi_proxy_server_fd);
+static void qmi_start_server(const char* servername) {
+    qmi_proxy_server_fd = create_local_server(servername);
+    dprintf("qmi_proxy_server_fd = %d\n", qmi_proxy_server_fd);
     if (qmi_proxy_server_fd == -1) {
-        dprintf("%s Failed to create %s, errno: %d (%s)\n", __func__, "quectel-qmi-proxy", errno, strerror(errno));
-        goto qmi_proxy_init_fail;
+        dprintf("Failed to create %s, errno: %d (%s)\n", servername, errno, strerror(errno));
     }
+}
 
-    dprintf("%s exit\n", __func__);
-    return 0;
-
-qmi_proxy_init_fail:
-    dprintf("%s exit\n", __func__);
-    return -1;
+static void qmi_close_server(const char* servername) {
+    if (qmi_proxy_server_fd != -1) {
+        dprintf("%s %s close server\n", __func__, servername);
+        close(qmi_proxy_server_fd);
+        qmi_proxy_server_fd = -1;
+    }
 }
 
 static void *qmi_proxy_loop(void *param)
 {
-    static uint8_t qmi_buf[2048];
     PQCQMIMSG pQMI = (PQCQMIMSG)qmi_buf;
     struct qlistnode *con_node;
     QMI_PROXY_CONNECTION *qmi_con;
 
-    dprintf("%s enter\n", __func__);
+    (void)param;
+    dprintf("%s enter thread_id %p\n", __func__, (void *)pthread_self());
 
     qlist_init(&qmi_proxy_connection);
     qlist_init(&qmi_proxy_ctl_msg);
 
-    while (cdc_wdm_fd > 0) {
+    while (cdc_wdm_fd > 0 && qmi_proxy_quit == 0) {
         struct pollfd pollfds[2+64];
         int ne, ret, nevents = 0;
         ssize_t nreads;
@@ -983,16 +826,18 @@ static void *qmi_proxy_loop(void *param)
                 break;
         }
 
+#if 0
         dprintf("poll ");
         for (ne = 0; ne < nevents; ne++) {
             dprintf("%d ", pollfds[ne].fd);
         }
         dprintf("\n");
+#endif
 
         do {
             //ret = poll(pollfds, nevents, -1);
             ret = poll(pollfds, nevents, (qmi_proxy_server_fd > 0) ? -1 : 200);
-         } while (ret < 0 && errno == EINTR);
+         } while (ret == -1 && errno == EINTR && qmi_proxy_quit == 0);
          
         if (ret < 0) {
             dprintf("%s poll=%d, errno: %d (%s)\n", __func__, ret, errno, strerror(errno));
@@ -1017,7 +862,7 @@ static void *qmi_proxy_loop(void *param)
             }
 
             if (!(pollfds[ne].revents & POLLIN)) {
-            	continue;
+                continue;
             }
 
             if (fd == qmi_proxy_server_fd) {
@@ -1025,48 +870,40 @@ static void *qmi_proxy_loop(void *param)
             }
             else if (fd == cdc_wdm_fd) {
                 nreads = read(fd, pQMI, sizeof(qmi_buf));
-                if (verbose_debug)
-                {
-                    ssize_t i;
-                    printf("r %d %zd: ", fd, nreads);
-                    for (i = 0; i < 16; i++)
-                        printf("%02x ", ((uint8_t *)pQMI)[i]);
-                    printf("\n");
-                }
                 if (nreads <= 0) {
                     dprintf("%s read=%d errno: %d (%s)\n",  __func__, (int)nreads, errno, strerror(errno));
                     goto qmi_proxy_loop_exit;
                 }
-
-                if (nreads != ((pQMI->QMIHdr.Length) + 1)) {
-                    dprintf("%s nreads=%d,  pQCQMI->QMIHdr.Length = %d\n",  __func__, (int)nreads, (pQMI->QMIHdr.Length));
+#ifdef QUECTEL_QMI_MERGE
+                if(merge_qmi_rsp_packet(pQMI, &nreads))
+                    continue;             
+#endif
+                if (nreads != (le16toh(pQMI->QMIHdr.Length) + 1)) {
+                    dprintf("%s nreads=%d,  pQCQMI->QMIHdr.Length = %d\n",  __func__, (int)nreads, le16toh(pQMI->QMIHdr.Length));
                     continue;
                 }
 
-                recv_qmi(pQMI, nreads);
+                dump_qmi(pQMI, fd, 'r');
+                recv_qmi_from_dev(pQMI);
+                if (modem_reset_flag)
+                    goto qmi_proxy_loop_exit;
             }
             else {
                 nreads = read(fd, pQMI, sizeof(qmi_buf));
-                if (verbose_debug)
-                {
-                    ssize_t i;
-                    printf("r %d %zd: ", fd, nreads);
-                    for (i = 0; i < 16; i++)
-                        printf("%02x ", ((uint8_t *)pQMI)[i]);
-                    printf("\n");
-                }
+  
                 if (nreads <= 0) {
                     dprintf("%s read=%d errno: %d (%s)",  __func__, (int)nreads, errno, strerror(errno));
                     cleanup_qmi_connection(fd);
                     break;
                 }
 
-                if (nreads != ((pQMI->QMIHdr.Length) + 1)) {
-                    dprintf("%s nreads=%d,  pQCQMI->QMIHdr.Length = %d\n",  __func__, (int)nreads, (pQMI->QMIHdr.Length));
+                if (nreads != (le16toh(pQMI->QMIHdr.Length) + 1)) {
+                    dprintf("%s nreads=%d,  pQCQMI->QMIHdr.Length = %d\n",  __func__, (int)nreads, le16toh(pQMI->QMIHdr.Length));
                     continue;
                 }
 
-                send_qmi(pQMI, nreads, fd);
+                dump_qmi(pQMI, fd, 'r');
+                recv_qmi_from_client(pQMI, nreads, fd);
             }
         }
     }
@@ -1078,54 +915,107 @@ qmi_proxy_loop_exit:
         cleanup_qmi_connection(qmi_con->ClientFd);
     }
     
-    dprintf("%s exit\n", __func__);
+    dprintf("%s exit, thread_id %p\n", __func__, (void *)pthread_self());
 
     return NULL;
 }
 
+static void usage(void) {
+    dprintf(" -d <device_name>                      A valid qmi device\n"
+            "                                       default /dev/cdc-wdm0, but cdc-wdm0 may be invalid\n"
+            " -i <netcard_name>                     netcard name\n"
+            " -v                                    Will show all details\n");
+}
 
+static void sig_action(int sig) {
+    if (qmi_proxy_quit == 0) {
+        qmi_proxy_quit = 1;
+        if (thread_id)
+            pthread_kill(thread_id, sig);
+    }
+}
 
 int main(int argc, char *argv[]) {
     int opt;
-    const char *cdc_wdm = "/dev/cdc-wdm0";
-    pthread_t thread_id;
+    char cdc_wdm[32+1] = "/dev/cdc-wdm0";
+    int retry_times = 0;
+    char servername[64] = {0};
 
     optind = 1;
-    while ( -1 != (opt = getopt(argc, argv, "d:v"))) {
+
+    signal(SIGINT, sig_action);
+
+    while ( -1 != (opt = getopt(argc, argv, "d:i:vh"))) {
         switch (opt) {
             case 'd':
-                cdc_wdm = optarg;
-            break;
+                strcpy(cdc_wdm, optarg);
+                break;
             case 'v':
                 verbose_debug = 1;
-            break;
+                break;
             default:
-            break;
-        }
-   }
-    
-	while(1) {
-    	if (access("/dev/cdc-wdm0", F_OK)) {
-        	sleep(2);
-        	continue;
-        }
-        
-    	cdc_wdm_fd = open(cdc_wdm, O_RDWR | O_NONBLOCK | O_NOCTTY);
-    	if (cdc_wdm_fd == -1) {
-        	dprintf("%s Failed to open %s, errno: %d (%s)\n", __func__, cdc_wdm, errno, strerror(errno));
-        	return -1;
-        }
-    	cfmakenoblock(cdc_wdm_fd);
-        
-    	if (!pthread_create(&thread_id, NULL, qmi_proxy_loop, NULL)) {
-            if (!qmi_proxy_init()) {            
-                pthread_join(thread_id, NULL);
-            	close(qmi_proxy_server_fd);
-            	qmi_proxy_server_fd = -1;
-            }
+                usage();
+                return 0;
         }
     }
-    
+
+    if (access(cdc_wdm, R_OK | W_OK)) {
+        dprintf("Fail to access %s, errno: %d (%s). break\n", cdc_wdm, errno, strerror(errno));
+        return -1;
+    }
+
+    sprintf(servername, "quectel-qmi-proxy%c", cdc_wdm[strlen(cdc_wdm)-1]);
+    dprintf("Will use cdc-wdm='%s', proxy='%s'\n", cdc_wdm, servername);
+
+    while (qmi_proxy_quit == 0) {
+        if (access(cdc_wdm, R_OK | W_OK)) {
+            dprintf("Fail to access %s, errno: %d (%s). continue\n", cdc_wdm, errno, strerror(errno));
+            // wait device
+            sleep(3);
+            continue;
+        }
+
+        cdc_wdm_fd = open(cdc_wdm, O_RDWR | O_NONBLOCK | O_NOCTTY);
+        if (cdc_wdm_fd == -1) {
+            dprintf("Failed to open %s, errno: %d (%s). break\n", cdc_wdm, errno, strerror(errno));
+            return -1;
+        }
+        cfmakenoblock(cdc_wdm_fd);
+        
+        /* no qmi_proxy_loop lives, create one */
+        pthread_create(&thread_id, NULL, qmi_proxy_loop, NULL);
+        /* try to redo init if failed, init function must be successfully */
+        while (qmi_proxy_init() != 0) {
+            if (retry_times < 5) {
+                dprintf("fail to init proxy, try again in 2 seconds.\n");
+                sleep(2);
+                retry_times++;
+            } else {
+                dprintf("has failed too much times, restart the modem and have a try...\n");
+                break;
+            }
+            /* break loop if modem is detached */
+            if (access(cdc_wdm, F_OK|R_OK|W_OK))
+                break;
+        }
+        retry_times = 0;
+        qmi_start_server(servername);
+        if (qmi_proxy_server_fd == -1)
+            pthread_cancel(thread_id); 
+        pthread_join(thread_id, NULL);
+
+        /* close local server at last */
+        qmi_close_server(servername);
+        close(cdc_wdm_fd);
+        /* DO RESTART IN 20s IF MODEM RESET ITSELF */
+        if (modem_reset_flag) {
+            unsigned int time_to_wait = 20;
+            while (time_to_wait) {
+                time_to_wait = sleep(time_to_wait);
+            }
+            modem_reset_flag = 0;
+        }
+    }
+
     return 0;
 }
-
