@@ -1,3 +1,14 @@
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
+
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
+
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -16,9 +27,9 @@
 #include <linux/if.h>
 #include <dirent.h>
 #include <signal.h>
-#include <endian.h>
 #include <inttypes.h>
 #include <getopt.h>
+#include "qendian.h"
 
 #define QUECTEL_MBIM_PROXY "quectel-mbim-proxy"
 #define safe_close(_fd) do { if (_fd > 0) { close(_fd); _fd = -1; } } while(0)
@@ -227,7 +238,7 @@ static int handle_client_request(int mbim_dev_fd, int client_fd, void *pdata, in
     /* transfer TransicationID to proxy transicationID and record in sender list */
     pRequest->TransactionId = htole32(TransactionId | (client_idx << TID_SHIFT));
     if (verbose) mbim_debug("REQ client_fd=%d, client_idx=%d, tid=%u\n",
-        cm_clients[i].client_fd, cm_clients[i].client_idx, TransactionId);
+        cm_clients[client_idx].client_fd, cm_clients[client_idx].client_idx, TransactionId);
     ret = non_block_write (mbim_dev_fd, pRequest, len);
     if (ret == len)
         return 0;

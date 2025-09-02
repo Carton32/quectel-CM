@@ -1,18 +1,13 @@
-/******************************************************************************
-  @file    QmiWwanCM.c
-  @brief   QMI WWAN connectivity manager.
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
 
-  DESCRIPTION
-  Connectivity Management Tool for USB network adapter of Quectel wireless cellular modules.
-
-  INITIALIZATION AND SEQUENCING REQUIREMENTS
-  None.
-
-  ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
-  Quectel Wireless Solution Proprietary and Confidential.
-  ---------------------------------------------------------------------------
-******************************************************************************/
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
 
 #include <stdio.h>
 #include <string.h>
@@ -23,7 +18,7 @@
 
 #ifdef CONFIG_QMIWWAN
 static int cdc_wdm_fd = -1;
-static UCHAR qmiclientId[QMUX_TYPE_WDS_ADMIN + 1];
+static UCHAR qmiclientId[QMUX_TYPE_ALL];
 
 static UCHAR GetQCTLTransactionId(void) {
     static int TransactionId = 0;
@@ -181,6 +176,7 @@ static UCHAR QmiWwanGetClientID(UCHAR QMIType) {
                 case QMUX_TYPE_WMS: dbg_time("Get clientWMS = %d", ClientId); break;
                 case QMUX_TYPE_PDS: dbg_time("Get clientPDS = %d", ClientId); break;
                 case QMUX_TYPE_UIM: dbg_time("Get clientUIM = %d", ClientId); break;
+                case QMUX_TYPE_COEX: dbg_time("Get clientCOEX = %d", ClientId); break;
                 case QMUX_TYPE_WDS_ADMIN: dbg_time("Get clientWDA = %d", ClientId);
                 break;
                 default: break;
@@ -211,7 +207,7 @@ static int QmiWwanInit(PROFILE_T *profile) {
     if (!profile->proxy[0]) {
         for (i = 0; i < 10; i++) {
             ret = QmiThreadSendQMITimeout(ComposeQCTLMsg(QMICTL_SYNC_REQ, NULL, NULL), NULL, 1 * 1000, __func__);
-            if (!ret)
+            if (ret != ETIMEDOUT)
                 break;
             sleep(1);
         }
@@ -246,6 +242,12 @@ static int QmiWwanInit(PROFILE_T *profile) {
     qmiclientId[QMUX_TYPE_NAS] = QmiWwanGetClientID(QMUX_TYPE_NAS);
     qmiclientId[QMUX_TYPE_UIM] = QmiWwanGetClientID(QMUX_TYPE_UIM);
     qmiclientId[QMUX_TYPE_WDS_ADMIN] = QmiWwanGetClientID(QMUX_TYPE_WDS_ADMIN);
+#ifdef CONFIG_COEX_WWAN_STATE
+    qmiclientId[QMUX_TYPE_COEX] = QmiWwanGetClientID(QMUX_TYPE_COEX);
+#endif
+#ifdef CONFIG_ENABLE_QOS
+    qmiclientId[QMUX_TYPE_QOS] = QmiWwanGetClientID(QMUX_TYPE_QOS);
+#endif
     profile->wda_client = qmiclientId[QMUX_TYPE_WDS_ADMIN];
 
     return 0;
@@ -257,8 +259,8 @@ static int QmiWwanDeInit(void) {
     {
         if (qmiclientId[i] != 0)
         {
-                QmiWwanReleaseClientID(i, qmiclientId[i]);
-                qmiclientId[i] = 0;
+            QmiWwanReleaseClientID((QMUX_TYPE_WDS_IPV6 == i ? QMUX_TYPE_WDS : i), qmiclientId[i]);
+            qmiclientId[i] = 0;
         }
     }
 
@@ -321,6 +323,9 @@ static void * QmiWwanThread(void *pData) {
          if (!strncmp(profile->proxy, QUECTEL_QMI_PROXY, strlen(QUECTEL_QMI_PROXY))) {
             snprintf(profile->proxy, sizeof(profile->proxy), "%s%c", QUECTEL_QMI_PROXY, num);
          }
+    }
+    else if (!strncmp(cdc_wdm, "/dev/mhi_IPCR", strlen("/dev/mhi_IPCR"))) {
+        snprintf(profile->proxy, sizeof(profile->proxy), "%s%c", QUECTEL_QRTR_PROXY, num);
     }
     else if (profile->qmap_mode > 1) {
         snprintf(profile->proxy, sizeof(profile->proxy), "%s%c", QUECTEL_QMI_PROXY, num);

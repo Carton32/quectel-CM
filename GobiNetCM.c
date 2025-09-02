@@ -1,18 +1,14 @@
-/******************************************************************************
-  @file    GobiNetCM.c
-  @brief   GobiNet driver.
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
 
-  DESCRIPTION
-  Connectivity Management Tool for USB network adapter of Quectel wireless cellular modules.
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
 
-  INITIALIZATION AND SEQUENCING REQUIREMENTS
-  None.
-
-  ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
-  Quectel Wireless Solution Proprietary and Confidential.
-  ---------------------------------------------------------------------------
-******************************************************************************/
 #include <stdio.h>
 #include <string.h>
 #include <termios.h>
@@ -21,7 +17,7 @@
 #include "QMIThread.h"
 
 #ifdef CONFIG_GOBINET
-static int qmiclientId[QMUX_TYPE_WDS_ADMIN + 1];
+static int qmiclientId[QMUX_TYPE_ALL];
 
 // IOCTL to generate a client ID for this service type
 #define IOCTL_QMI_GET_SERVICE_FILE 0x8BE0 + 1
@@ -64,7 +60,7 @@ static int GobiNetGetClientID(const char *qcqmi, UCHAR QMIType) {
     ClientId = cm_open_dev(qcqmi);
     if (ClientId == -1) {
         dbg_time("failed to open %s, errno: %d (%s)", qcqmi, errno, strerror(errno));
-        return -1;
+        return 0;
     }
 
     if (ioctl(ClientId, IOCTL_QMI_GET_SERVICE_FILE, QMIType) != 0) {
@@ -81,6 +77,7 @@ static int GobiNetGetClientID(const char *qcqmi, UCHAR QMIType) {
         case QMUX_TYPE_WMS: dbg_time("Get clientWMS = %d", ClientId); break;
         case QMUX_TYPE_PDS: dbg_time("Get clientPDS = %d", ClientId); break;
         case QMUX_TYPE_UIM: dbg_time("Get clientUIM = %d", ClientId); break;
+        case QMUX_TYPE_COEX: dbg_time("Get clientCOEX = %d", ClientId); break;
         case QMUX_TYPE_WDS_ADMIN: dbg_time("Get clientWDA = %d", ClientId);
         break;
         default: break;
@@ -114,6 +111,9 @@ static void * GobiNetThread(void *pData) {
     qmiclientId[QMUX_TYPE_DMS] = GobiNetGetClientID(qcqmi, QMUX_TYPE_DMS);
     qmiclientId[QMUX_TYPE_NAS] = GobiNetGetClientID(qcqmi, QMUX_TYPE_NAS);
     qmiclientId[QMUX_TYPE_UIM] = GobiNetGetClientID(qcqmi, QMUX_TYPE_UIM);
+#ifdef CONFIG_COEX_WWAN_STATE
+    qmiclientId[QMUX_TYPE_COEX] = GobiNetGetClientID(qcqmi, QMUX_TYPE_COEX);
+#endif
     if (profile->qmap_mode == 0 || profile->loopback_state) {//when QMAP enabled, set data format in GobiNet Driver
         qmiclientId[QMUX_TYPE_WDS_ADMIN] = GobiNetGetClientID(qcqmi, QMUX_TYPE_WDS_ADMIN);
         profile->wda_client = qmiclientId[QMUX_TYPE_WDS_ADMIN];

@@ -1,18 +1,14 @@
-/******************************************************************************
-  @file    udhcpc.c
-  @brief   call DHCP tools to obtain IP address.
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
 
-  DESCRIPTION
-  Connectivity Management Tool for USB network adapter of Quectel wireless cellular modules.
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
 
-  INITIALIZATION AND SEQUENCING REQUIREMENTS
-  None.
-
-  ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
-  Quectel Wireless Solution Proprietary and Confidential.
-  ---------------------------------------------------------------------------
-******************************************************************************/
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/types.h>
@@ -38,7 +34,7 @@ static int ql_system(const char *shell_cmd) {
 static void ifc_init_ifr(const char *name, struct ifreq *ifr)
 {
     memset(ifr, 0, sizeof(struct ifreq));
-    strncpy(ifr->ifr_name, name, IFNAMSIZ);
+    no_trunc_strncpy(ifr->ifr_name, name, IFNAMSIZ);
     ifr->ifr_name[IFNAMSIZ - 1] = 0;
 }
 
@@ -105,6 +101,17 @@ static short ifc_get_flags(const char *ifname)
     return ret;
 }
 
+static void ifc_set_state(const char *ifname, int state) {
+    char shell_cmd[128];
+
+    if (!access("/sbin/ip", X_OK)) {
+        snprintf(shell_cmd, sizeof(shell_cmd), "ip link set dev %s %s", ifname, state ? "up" : "down");
+    } else {
+        snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s %s", ifname, state ? "up" : "down");
+    }
+    ql_system(shell_cmd);
+}
+
 static int ql_netcard_ipv4_address_check(const char *ifname, in_addr_t ip) {
     in_addr_t addr = 0;
 
@@ -115,7 +122,6 @@ static int ql_netcard_ipv4_address_check(const char *ifname, in_addr_t ip) {
 static int ql_raw_ip_mode_check(const char *ifname, uint32_t ip) {
     int fd;
     char raw_ip[128];
-    char shell_cmd[128];
     char mode[2] = "X";
     int mode_change = 0;
 
@@ -135,14 +141,12 @@ static int ql_raw_ip_mode_check(const char *ifname, uint32_t ip) {
     if (read(fd, mode, 2) == -1) {};
     if (mode[0] == '0' || mode[0] == 'N') {
         dbg_time("File:%s Line:%d udhcpc fail to get ip address, try next:", __func__, __LINE__);
-        snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s down", ifname);
-        ql_system(shell_cmd);
+        ifc_set_state(ifname, 0);
         dbg_time("echo Y > /sys/class/net/%s/qmi/raw_ip", ifname);
         mode[0] = 'Y';
         if (write(fd, mode, 2) == -1) {};
         mode_change = 1;
-        snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s up", ifname);
-        ql_system(shell_cmd);
+        ifc_set_state(ifname, 1);
     }
 
     close(fd);
@@ -211,8 +215,7 @@ void ql_set_driver_link_state(PROFILE_T *profile, int link_state) {
         lseek(fd, 0, SEEK_SET);
         rc = read(fd, link_file, sizeof(link_file));
         if (rc > 1 && (!strncasecmp(link_file, "0\n", 2) || !strncasecmp(link_file, "0x0\n", 4))) {
-            snprintf(link_file, sizeof(link_file), "ifconfig %s down", profile->usbnet_adapter);
-            ql_system(link_file);
+            ifc_set_state(profile->usbnet_adapter, 0);
         }
     }
 
@@ -260,7 +263,7 @@ void update_ipv4_address(const char *ifname, const char *ip, const char *gw, uns
         ql_system(shell_cmd);
     } else {
         unsigned n =  (0xFFFFFFFF >> (32 - prefix)) << (32 - prefix);
-        n = (n>>24) | (n>>8&0xff00) | (n<<8&0xff0000) | (n<<24);
+       // n = (n>>24) | (n>>8&0xff00) | (n<<8&0xff0000) | (n<<24);
 
         snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s %s netmask %s", ifname, ip, ipv4Str(n));
         ql_system(shell_cmd);
@@ -307,7 +310,7 @@ static void update_ip_address_by_qmi(const char *ifname, const IPV4_T *ipv4, con
         unsigned n = 0;
 
         for (n = 0; n < 32; n++) {
-            if (ipv4->SubnetMask&(1<<n)) {
+            if (ipv4->SubnetMask&((unsigned)1<<n)) {
                 prefix++;
             }
         }
@@ -470,7 +473,6 @@ static void ql_openwrt_setup_wan6(const char *ifname, const IPV6_T *ipv6) {
 
 void udhcpc_start(PROFILE_T *profile) {
     char *ifname = profile->usbnet_adapter;
-    char shell_cmd[128];
 
     ql_set_driver_link_state(profile, 1);
 
@@ -483,17 +485,13 @@ void udhcpc_start(PROFILE_T *profile) {
     }
 
     if (strcmp(ifname, profile->usbnet_adapter)) {
-        snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s up", profile->usbnet_adapter);
-        ql_system(shell_cmd);
+        ifc_set_state(profile->usbnet_adapter, 1);
         if (ifc_get_flags(ifname)&IFF_UP) {
-            snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s down", ifname);
-            ql_system(shell_cmd);
+            ifc_set_state(ifname, 0);
         }
     }
 
-    snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s up", ifname);
-    ql_system(shell_cmd);
-	
+    ifc_set_state(ifname, 1);
     if (profile->ipv4.Address) {
         if (profile->PCSCFIpv4Addr1)
             dbg_time("pcscf1: %s", ipv4Str(profile->PCSCFIpv4Addr1));
@@ -528,7 +526,7 @@ void udhcpc_start(PROFILE_T *profile) {
     if (profile->ipv4.Address == 0)
         goto set_ipv6;
 
-    if (profile->request_ops == &mbim_request_ops) { //lots of mbim modem do not support DHCP
+    if (profile->no_dhcp || profile->usb_dev.idProduct == 0x0316 || profile->request_ops == &mbim_request_ops) { //lots of mbim modem do not support DHCP
         update_ip_address_by_qmi(ifname, &profile->ipv4, NULL);
     }
     else
@@ -579,9 +577,16 @@ void udhcpc_start(PROFILE_T *profile) {
             pthread_create(&udhcpc_thread_id, NULL, udhcpc_thread_function, (void*)strdup(udhcpc_cmd));
             pthread_join(udhcpc_thread_id, NULL);
 
-            if (profile->request_ops == &atc_request_ops
-                && !ql_netcard_ipv4_address_check(ifname, qmi2addr(profile->ipv4.Address))) {
-                ql_get_netcard_carrier_state(ifname);
+            if (profile->request_ops == &atc_request_ops) {
+                profile->udhcpc_ip = 0;
+                ifc_get_addr(ifname, &profile->udhcpc_ip);
+                if (profile->udhcpc_ip != profile->ipv4.Address) {
+                    unsigned char *l = (unsigned char *)&profile->udhcpc_ip;
+                    unsigned char *r = (unsigned char *)&profile->ipv4.Address;
+                    dbg_time("ERROR: IP from udhcpc (%d.%d.%d.%d) is different to IP from ATC (%d.%d.%d.%d)!",
+                              l[0], l[1], l[2], l[3], r[0], r[1], r[2], r[3]);
+                    ql_get_netcard_carrier_state(ifname); //miss udhcpc default.script or modem not report usb-net-cdc-linkup
+                }
             }
 
             if (profile->request_ops != &qmi_request_ops) { //only QMI modem support next fixup!
@@ -597,6 +602,32 @@ void udhcpc_start(PROFILE_T *profile) {
                 //no udhcpc's default.script exist, directly set ip and dns
                 update_ip_address_by_qmi(ifname, &profile->ipv4, NULL);
             }
+            //Add by Demon. check default route 
+            FILE *rt_fp = NULL;
+            char rt_cmd[128] = {0};
+            
+            //Check if there is a default route. 
+            snprintf(rt_cmd, sizeof(rt_cmd), "route -n | grep %s | awk '{print $1}' | grep 0.0.0.0", ifname);
+            rt_fp = popen((const char *)rt_cmd, "r");
+            if (rt_fp != NULL) {
+              char buf[20] = {0};
+              int found_default_rt = 0;
+
+              if (fgets(buf, sizeof(buf), rt_fp) != NULL) {
+                //Find the specified interface
+                found_default_rt = 1;
+              }
+
+              if (1 == found_default_rt) {
+                //dbg_time("Route items found for %s", ifname);
+              }
+              else {
+                dbg_time("Warning: No route items found for %s", ifname);
+              }
+
+              pclose(rt_fp);
+            }
+            //End by Demon.
 #endif
     }
 
@@ -694,11 +725,14 @@ void udhcpc_stop(PROFILE_T *profile) {
         dibbler_client_alive = 0;
     }
 
+    profile->udhcpc_ip = 0;
 //it seems when call netif_carrier_on(), and netcard 's IP is "0.0.0.0", will cause netif_queue_stopped()
-    snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s 0.0.0.0", ifname);
+    if (!access("/sbin/ip", X_OK))
+        snprintf(shell_cmd, sizeof(shell_cmd), "ip addr flush dev %s", ifname);
+    else
+        snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s 0.0.0.0", ifname);
     ql_system(shell_cmd);
-    snprintf(shell_cmd, sizeof(shell_cmd), "ifconfig %s down", ifname);
-    ql_system(shell_cmd);
+    ifc_set_state(ifname, 0);
 
 #ifdef QL_OPENWER_NETWORK_SETUP
     ql_openwrt_setup_wan(ifname, NULL);

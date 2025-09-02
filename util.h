@@ -1,11 +1,13 @@
-/**  
-  @file
-  util.h
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
 
-  @brief
-  This file provides the definitions, and declares some common APIs for list-algorithm.
-
- */
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
 
 #ifndef _UTILS_H_
 #define _UTILS_H_

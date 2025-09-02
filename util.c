@@ -1,18 +1,13 @@
-/******************************************************************************
-  @file    util.c
-  @brief   some utils for this QCM tool.
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
 
-  DESCRIPTION
-  Connectivity Management Tool for USB network adapter of Quectel wireless cellular modules.
-
-  INITIALIZATION AND SEQUENCING REQUIREMENTS
-  None.
-
-  ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
-  Quectel Wireless Solution Proprietary and Confidential.
-  ---------------------------------------------------------------------------
-******************************************************************************/
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
 
 #include <sys/time.h>
 #include <net/if.h>
@@ -169,70 +164,6 @@ unsigned long clock_msec(void)
 }
 
 FILE *logfilefp = NULL;
-
-const int i = 1;
-#define is_bigendian() ( (*(char*)&i) == 0 )
-
-USHORT le16_to_cpu(USHORT v16) {
-    USHORT tmp = v16;
-    if (is_bigendian()) {
-        unsigned char *s = (unsigned char *)(&v16);
-        unsigned char *d = (unsigned char *)(&tmp);
-        d[0] = s[1];
-        d[1] = s[0];
-    }
-    return tmp;
-}
-
-UINT  le32_to_cpu (UINT v32) {
-    UINT tmp = v32;
-    if (is_bigendian()) {
-        unsigned char *s = (unsigned char *)(&v32);
-        unsigned char *d = (unsigned char *)(&tmp);
-        d[0] = s[3];
-        d[1] = s[2];
-        d[2] = s[1];
-        d[3] = s[0];
-    }
-    return tmp;
-}
-
-UINT ql_swap32(UINT v32) {
-    UINT tmp = v32;
-    {
-        unsigned char *s = (unsigned char *)(&v32);
-        unsigned char *d = (unsigned char *)(&tmp);
-        d[0] = s[3];
-        d[1] = s[2];
-        d[2] = s[1];
-        d[3] = s[0];
-    }
-    return tmp;
-}
-
-USHORT cpu_to_le16(USHORT v16) {
-    USHORT tmp = v16;
-    if (is_bigendian()) {
-        unsigned char *s = (unsigned char *)(&v16);
-        unsigned char *d = (unsigned char *)(&tmp);
-        d[0] = s[1];
-        d[1] = s[0];
-    }
-    return tmp;
-}
-
-UINT cpu_to_le32 (UINT v32) {
-    UINT tmp = v32;
-    if (is_bigendian()) {
-        unsigned char *s = (unsigned char *)(&v32);
-        unsigned char *d = (unsigned char *)(&tmp);
-        d[0] = s[3];
-        d[1] = s[2];
-        d[2] = s[1];
-        d[3] = s[0];
-    }
-    return tmp;
-}
 
 void update_resolv_conf(int iptype, const char *ifname, const char *dns1, const char *dns2) {
     const char *dns_file = "/etc/resolv.conf";
@@ -411,4 +342,15 @@ void ql_set_driver_qmap_setting(PROFILE_T *profile, QMAP_SETTING *qmap_settings)
     }
 
     close(ifc_ctl_sock);	
+}
+
+void no_trunc_strncpy(char *dest, const char *src, size_t dest_size)
+{
+    size_t i = 0;
+
+    for (i = 0; i < dest_size && *src; i++) {
+        *dest++ = *src++;
+    }
+
+    *dest = 0;
 }

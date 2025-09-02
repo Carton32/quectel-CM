@@ -1,3 +1,14 @@
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
+
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
+
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/types.h>

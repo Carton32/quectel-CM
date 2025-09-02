@@ -1,5 +1,39 @@
 Release Notes
 
+[V1.6.8]
+Date:   3/4/2025
+enhancement:
+  1. add QMI dialing status report
+fix:
+  1. fix some bugs
+
+[V1.6.7]
+Date:   5/17/2024
+enhancement:
+  1. optimize -a parameter
+fix:
+  1. fix the multiple dialing issue on the SDX35 platform
+
+[V1.6.6]
+Date:   1/12/2024
+enhancement:
+  1. support SDX35 platform
+  
+[V1.6.4]
+Date:   9/7/2022
+enhancement:
+  1. set cflags as -Wall -Wextra -Werror -O1, and fix compile errors
+  2. some code refactoring
+  3. add quectel-qrtr-proxy
+fix:
+  1. netmask error when use ifconfig on little endian cpu
+
+[V1.6.2]
+Date:   11/18/2021
+enhancement:
+	1. support 'LTE && WiFi Coexistence Solution via QMI'.
+	   If customer want use this feature, need enable CONFIG_COEX_WWAN_STATE in QMIThread.h 
+
 [V1.6.1]
 Date:   7/20/2021
 enhancement:
@@ -7,6 +41,7 @@ enhancement:
 	2. add QMI OVER MBIM 
 	3. support qrtr and rmnet
 	4. support RG500U PCIE 
+	5. add qos service && get qos flow data_rate_max func
 fix:
   1. mbim: increase mbim open timeout to 3 seconds. some modem take long time for open cmd.
   2. support MsChapV2

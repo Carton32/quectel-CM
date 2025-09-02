@@ -1,3 +1,14 @@
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
+
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
+
 #ifndef __QMI_THREAD_H__
 #define __QMI_THREAD_H__
 
@@ -8,12 +19,27 @@
 #define CONFIG_VERSION
 //#define CONFIG_SIGNALINFO
 //#define CONFIG_CELLINFO
+//#define CONFIG_COEX_WWAN_STATE
 #define CONFIG_DEFAULT_PDP 1
 //#define CONFIG_IMSI_ICCID
 #define QUECTEL_UL_DATA_AGG
 //#define QUECTEL_QMI_MERGE
 //#define REBOOT_SIM_CARD_WHEN_APN_CHANGE
+//#define REBOOT_SIM_CARD_WHEN_LONG_TIME_NO_PS 60 //unit is seconds
 //#define CONFIG_QRTR
+//#define CONFIG_ENABLE_QOS
+//#define CONFIG_REG_QOS_IND
+//#define CONFIG_GET_QOS_INFO
+//#define CONFIG_GET_QOS_DATA_RATE
+
+#if (defined(CONFIG_REG_QOS_IND) || defined(CONFIG_GET_QOS_INFO) || defined(CONFIG_GET_QOS_DATA_RATE))
+#ifndef CONFIG_REG_QOS_IND
+#define CONFIG_REG_QOS_IND
+#endif
+#ifndef CONFIG_ENABLE_QOS
+#define CONFIG_ENABLE_QOS
+#endif
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -37,9 +63,10 @@
 #include <sys/socket.h>
 #include <stddef.h>
 
-#include "MPQMI.h"
-#include "MPQCTL.h"
-#include "MPQMUX.h"
+#include "qendian.h"
+#include "QCQMI.h"
+#include "QCQCTL.h"
+#include "QCQMUX.h"
 #include "util.h"
 
 #define DEVICE_CLASS_UNKNOWN           0
@@ -70,15 +97,6 @@ struct wwan_data_class_str {
 };
 
 #pragma pack(push, 1)
-
-typedef struct _QCQMIMSG {
-    QCQMI_HDR QMIHdr;
-    union {
-        QMICTL_MSG CTLMsg;
-        QMUX_MSG MUXMsg;
-    };
-} __attribute__ ((packed)) QCQMIMSG, *PQCQMIMSG;
-
 typedef struct __IPV4 {
     uint32_t Address;
     uint32_t Gateway;
@@ -173,6 +191,8 @@ struct usb_interface_info {
 #define LIBMBIM_PROXY "mbim-proxy"
 #define QUECTEL_QMI_PROXY "quectel-qmi-proxy"
 #define QUECTEL_MBIM_PROXY "quectel-mbim-proxy"
+#define QUECTEL_ATC_PROXY "quectel-atc-proxy"
+#define QUECTEL_QRTR_PROXY "quectel-qrtr-proxy"
 
 #ifndef bool
 #define bool uint8_t
@@ -182,15 +202,17 @@ typedef struct __PROFILE {
     //user input start
     const char *apn;
     const char *user;
-    const char *password;
+    const char *pd;
     int auth;
     int iptype;
     const char *pincode;
     char proxy[32];
-    int pdp;
+    int pdp;//pdp_context
+    int profile_index;//profile_index
     int enable_bridge;
     bool enable_ipv4;
     bool enable_ipv6;
+    bool no_dhcp;
     const char *logfile;
     const char *usblogfile;
     char expect_adapter[32];
@@ -208,7 +230,11 @@ typedef struct __PROFILE {
     int curIpFamily;
     int rawIP;
     int muxid;
+#ifdef CONFIG_ENABLE_QOS
+    UINT qos_id;
+#endif
     int wda_client;
+    uint32_t udhcpc_ip;
     IPV4_T ipv4;
     IPV6_T ipv6;
     UINT PCSCFIpv4Addr1;
@@ -229,13 +255,16 @@ typedef struct __PROFILE {
     char BaseBandVersion[64];
     char old_apn[64];
     char old_user[64];
-    char old_password[64];
+    char old_pd[64];
     int old_auth;
     int old_iptype;
 
     const struct qmi_device_ops *qmi_ops;
     const struct request_ops *request_ops;
     RMNET_INFO rmnet_info;
+    BOOL bring_up_by_apn_name;
+    BOOL bring_up_by_apn_type; 
+    int apn_type;
 } PROFILE_T;
 
 #ifdef QUECTEL_QMI_MERGE
@@ -276,6 +305,9 @@ typedef enum {
 #define RIL_UNSOL_DATA_CALL_LIST_CHANGED    0x1005
 #define MODEM_REPORT_RESET_EVENT 0x1006
 #define RIL_UNSOL_LOOPBACK_CONFIG_IND 0x1007
+#ifdef CONFIG_REG_QOS_IND
+#define RIL_UNSOL_GLOBAL_QOS_FLOW_IND_QOS_ID 0x1008
+#endif
 
 extern pthread_mutex_t cm_command_mutex;
 extern pthread_cond_t cm_command_cond;
@@ -296,6 +328,12 @@ extern void qmidevice_send_event_to_main(int triger_event);
 extern void qmidevice_send_event_to_main_ext(int triger_event, void *data, unsigned len);
 extern uint8_t qmi_over_mbim_get_client_id(uint8_t QMIType);
 extern uint8_t qmi_over_mbim_release_client_id(uint8_t QMIType, uint8_t ClientId);
+#ifdef CONFIG_REG_QOS_IND
+extern UCHAR ql_get_global_qos_flow_ind_qos_id(PQCQMIMSG pResponse, UINT *qos_id);
+#endif
+#ifdef CONFIG_GET_QOS_DATA_RATE
+extern UCHAR ql_get_global_qos_flow_ind_data_rate(PQCQMIMSG pResponse, void *max_data_rate);
+#endif
 
 struct request_ops {
     int (*requestBaseBandVersion)(PROFILE_T *profile);
@@ -303,7 +341,7 @@ struct request_ops {
     int (*requestSetLoopBackState)(UCHAR loopback_state, ULONG replication_factor);
     int (*requestGetSIMStatus)(SIM_Status *pSIMStatus);
     int (*requestEnterSimPin)(const char *pPinCode);
-    int (*requestSetProfile)(PROFILE_T *profile) ;
+    int (*requestSetProfile)(PROFILE_T *profile); // 1 ~ success and apn change, 0 ~ success and no apn change, -1 ~ fail
     int (*requestGetProfile)(PROFILE_T *profile);
     int (*requestRegistrationState)(UCHAR *pPSAttachedState);
     int (*requestSetupDataCall)(PROFILE_T *profile, int curIpFamily);
@@ -315,6 +353,9 @@ struct request_ops {
     int (*requestGetICCID)(void);
     int (*requestGetIMSI)(void);
     int (*requestRadioPower)(int state);
+    int (*requestRegisterQos)(PROFILE_T *profile);
+    int (*requestGetQosInfo)(PROFILE_T *profile);
+    int (*requestGetCoexWWANState)(void);
 };
 extern const struct request_ops qmi_request_ops;
 extern const struct request_ops mbim_request_ops;
@@ -328,8 +369,10 @@ extern int ql_bridge_mode_detect(PROFILE_T *profile);
 extern int ql_enable_qmi_wwan_rawip_mode(PROFILE_T *profile);
 extern int ql_qmap_mode_detect(PROFILE_T *profile);
 #ifdef CONFIG_QRTR
-extern int rtrmnet_ctl_create_vnd(char *devname, char *vndname, uint8_t muxid,
+extern int rtrmnet_ctl_new_vnd(char *devname, char *vndname, uint8_t muxid,
 		       uint32_t qmap_version, uint32_t ul_agg_cnt, uint32_t ul_agg_size);
+extern int rtrmnet_ctl_get_vnd(char *vndname, int *muxid,
+		       int *qmap_version);
 #endif
 
 #define qmidev_is_gobinet(_qmichannel) (strncmp(_qmichannel, "/dev/qcqmi", strlen("/dev/qcqmi")) == 0)
@@ -343,15 +386,11 @@ extern FILE *logfilefp;
 extern int debug_qmi;
 extern int qmidevice_control_fd[2];
 extern int g_donot_exit_when_modem_hangup;
-extern USHORT le16_to_cpu(USHORT v16);
-extern UINT  le32_to_cpu (UINT v32);
-extern UINT  ql_swap32(UINT v32);
-extern USHORT cpu_to_le16(USHORT v16);
-extern UINT cpu_to_le32(UINT v32);
 extern void update_resolv_conf(int iptype, const char *ifname, const char *dns1, const char *dns2);
 void update_ipv4_address(const char *ifname, const char *ip, const char *gw, unsigned prefix);
 void update_ipv6_address(const char *ifname, const char *ip, const char *gw, unsigned prefix);
 int reattach_driver(PROFILE_T *profile);
+extern void no_trunc_strncpy(char *dest, const char *src, size_t dest_size);
 
 enum
 {
@@ -362,7 +401,35 @@ enum
 	SOFTWARE_QRTR,
 	HARDWARE_PCIE,
 	HARDWARE_USB,
+	HARDWARE_IPA,
 };
+
+#ifdef USE_IPC_MSG_STATUS_IND
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#define MSG_FILE "/etc/passwd"
+#define MSG_TYPE_IPC 1
+#define MSGBUFFSZ 16
+struct message
+{
+    long mtype;
+    char mtext[MSGBUFFSZ];
+};
+
+enum
+{
+    QCM_PARA_CONFIG_QUERY = 1,
+    QCM_NETWORK_IPV4_CONNECTED,
+    QCM_NETWORK_IPV6_CONNECTED,
+    QCM_NETWORK_IPV4_DISCONNECTED,
+    QCM_NETWORK_IPV6_DISCONNECTED,
+    QCM_PREPARE_START_DAIL,
+    QCM_PREPARE_DAIL_FIAL,
+    QCM_PREPARE_DAIL_SUCC,
+    QCM_PREPARE_RESTART_DAIL,
+    QCM_PROCESS_EXIT,
+};
+#endif
 
 enum
 {
@@ -387,11 +454,13 @@ typedef enum
 #ifdef CM_DEBUG
 #define dbg_time(fmt, args...) do { \
     fprintf(stdout, "[%15s-%04d: %s] " fmt "\n", __FILE__, __LINE__, get_time(), ##args); \
+    fflush(stdout);\
     if (logfilefp) fprintf(logfilefp, "[%s-%04d: %s] " fmt "\n", __FILE__, __LINE__, get_time(), ##args); \
 } while(0)
 #else
 #define dbg_time(fmt, args...) do { \
     fprintf(stdout, "[%s] " fmt "\n", get_time(), ##args); \
+    fflush(stdout);\
     if (logfilefp) fprintf(logfilefp, "[%s] " fmt "\n", get_time(), ##args); \
 } while(0)
 #endif

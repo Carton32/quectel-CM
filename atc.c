@@ -1,18 +1,14 @@
-/******************************************************************************
-  @file    atc.c
-  @brief   at command.
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
 
-  DESCRIPTION
-  Connectivity Management Tool for USB network adapter of Quectel wireless cellular modules.
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
 
-  INITIALIZATION AND SEQUENCING REQUIREMENTS
-  None.
-
-  ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
-  Quectel Wireless Solution Proprietary and Confidential.
-  ---------------------------------------------------------------------------
-******************************************************************************/
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,6 +52,15 @@ static int atc_init(PROFILE_T *profile) {
     char *cmd;
     ATResponse *p_response = NULL;
 
+    if (profile->proxy[0])  {
+        s_pdp = profile->pdp;
+        err = at_send_command_singleline("AT+QNETDEVSTATUS=?", "+QNETDEVSTATUS:", &p_response);
+        if (at_response_error(err, p_response))
+            asr_style_atc = 1; //EC200T/EC100Y do not support this AT, but RG801/RG500U support
+        safe_at_response_free(p_response);
+		
+        return err;
+    }
 
     err = at_handshake();
     if (err) {
@@ -74,6 +79,9 @@ static int atc_init(PROFILE_T *profile) {
     if (at_response_error(err, p_response))
         asr_style_atc = 1; //EC200T/EC100Y do not support this AT, but RG801/RG500U support 
     safe_at_response_free(p_response);
+
+    if(profile->usb_dev.idProduct == 0x6007)
+        asr_style_atc = 1;
 
     err = at_send_command_singleline("AT+QCFG=\"NAT\"", "+QCFG:", &p_response);
     if (!at_response_error(err, p_response)) {
@@ -147,7 +155,7 @@ static void * atc_read_thread(void *param) {
 
     dbg_time("atc_fd = %d", atc_fd);
 
-    if (at_open(atc_fd, onUnsolicited))
+    if (at_open(atc_fd, onUnsolicited, 0))
         goto __quit;
 
     at_set_on_timeout(onTimeout);
@@ -231,7 +239,7 @@ static int requestBaseBandVersion(PROFILE_T *profile) {
         goto exit;
 
     if (p_response->p_intermediates && p_response->p_intermediates->line) {
-        strncpy(profile->BaseBandVersion, p_response->p_intermediates->line, sizeof(profile->BaseBandVersion));
+        strncpy(profile->BaseBandVersion, p_response->p_intermediates->line, sizeof(profile->BaseBandVersion) - 1);
         retVal = 0;
     }
 
@@ -332,22 +340,21 @@ static int requestEnterSimPin(const char *pPinCode) {
     return retVal;
 }
 
-static int QICSGP_C;
 static int requestSetProfile(PROFILE_T *profile) {
     int err;
     ATResponse *p_response = NULL;
     char *cmd = NULL;
     const char *new_apn = profile->apn ? profile->apn : "";
     const char *new_user = profile->user ? profile->user : "";
-    const char *new_password = profile->password ? profile->password : "";
+    const char *new_pd = profile->pd ? profile->pd : "";
     const char *ipStr[] = {"NULL", "IPV4", "IPV6", "IPV4V6"};
 
     dbg_time("%s[%d] %s/%s/%s/%d/%s", __func__,
-        profile->pdp, profile->apn, profile->user, profile->password,
+        profile->pdp, profile->apn, profile->user, profile->pd,
         profile->auth,ipStr[profile->iptype]);
 
     if ( !strcmp(profile->old_apn, new_apn) && !strcmp(profile->old_user, new_user)
-        && !strcmp(profile->old_password, new_password)
+        && !strcmp(profile->old_pd, new_pd)
         && profile->old_iptype == profile->iptype
         && profile->old_auth == profile->auth)
     {
@@ -355,15 +362,8 @@ static int requestSetProfile(PROFILE_T *profile) {
         return 0;
     }
 
-    if (QICSGP_C == 5)
-        asprintf(&cmd, "AT+QICSGP=%d,%d,\"%s\",\"%s\",\"%s\",%d",
-            profile->pdp, profile->iptype, new_apn, new_user, new_password, profile->auth);
-    else if (QICSGP_C == 4)
-        asprintf(&cmd, "AT+QICSGP=%d,\"%s\",\"%s\",\"%s\",%d",
-            profile->pdp, new_apn, new_user, new_password, profile->auth);
-    else
-        goto _error;
-
+    asprintf(&cmd, "AT+QICSGP=%d,%d,\"%s\",\"%s\",\"%s\",%d",
+        profile->pdp, profile->iptype, new_apn, new_user, new_pd, profile->auth);
     err = at_send_command(cmd, &p_response);
     safe_free(cmd);
     if (at_response_error(err, p_response)) {
@@ -373,9 +373,8 @@ static int requestSetProfile(PROFILE_T *profile) {
         safe_free(cmd);
     }
 
-_error:
     safe_at_response_free(p_response);
-    return 0;
+    return 1;
 }
 
 static int requestGetProfile(PROFILE_T *profile) {
@@ -385,7 +384,7 @@ static int requestGetProfile(PROFILE_T *profile) {
     char *cmd = NULL;
     int pdp;
     int old_iptype = 1; // 1 ~ IPV4, 2 ~ IPV6, 3 ~ IPV4V6
-    char *old_apn = "", *old_user = "", *old_password = "";
+    char *old_apn = "", *old_user = "", *old_pd = "";
     int old_auth = 0;
     const char *ipStr[] = {"NULL", "IPV4", "IPV6", "IPV4V6"};
 
@@ -413,20 +412,10 @@ _re_check:
     }
 
     if (!at_response_error(err, p_response)) {
-        QICSGP_C = at_tok_count(p_response->p_intermediates->line);
-        if (QICSGP_C > 5)
-            QICSGP_C = 5;
+        err = at_tok_scanf(p_response->p_intermediates->line,
+            "%d%s%s%s%d", &old_iptype, &old_apn,  &old_user, &old_pd, &old_auth);
 
-        if (QICSGP_C == 5)
-            err = at_tok_scanf(p_response->p_intermediates->line,
-                "%d%d%s%s%s%d", &pdp, &old_iptype, &old_apn,  &old_user, &old_password, &old_auth);
-        else if (QICSGP_C == 4)
-            err = at_tok_scanf(p_response->p_intermediates->line,
-                "%d%s%s%s%d", &pdp, &old_apn,  &old_user, &old_password, &old_auth);
-        else
-            goto _error;
-
-        if (err != (QICSGP_C + 1) || pdp != profile->pdp)
+        if (err != 4 || pdp != profile->pdp)
             goto _error;
     }
     else {
@@ -460,16 +449,16 @@ _re_check:
 _error:
     if (!old_apn) old_apn = "";
     if (!old_user) old_user = "";
-    if (!old_password) old_password = "";
+    if (!old_pd) old_pd = "";
 
     strncpy(profile->old_apn, old_apn, sizeof(profile->old_apn));
     strncpy(profile->old_user, old_user, sizeof(profile->old_user));
-    strncpy(profile->old_password, old_password, sizeof(profile->old_password));
+    strncpy(profile->old_pd, old_pd, sizeof(profile->old_pd));
     profile->old_auth = old_auth;
     profile->old_iptype = old_iptype; 
 
     dbg_time("%s[%d] %s/%s/%s/%d/%s", __func__,
-        profile->pdp, profile->old_apn, profile->old_user, profile->old_password,
+        profile->pdp, profile->old_apn, profile->old_user, profile->old_pd,
         profile->old_auth, ipStr[profile->old_iptype]);
 
     safe_at_response_free(p_response);
@@ -513,6 +502,7 @@ AT< OK
     safe_at_response_free(p_response);
     switch (cops_act) {
         case 2: //UTRAN
+        case 3: //GSM W/EGPRS
         case 4: //UTRAN W/HSDPA
         case 5: //UTRAN W/HSUPA
         case 6: //UTRAN W/HSDPA and HSUPA
@@ -612,10 +602,13 @@ static int requestSetupDataCall(PROFILE_T *profile, int curIpFamily) {
 
         for (p_cur = p_response->p_intermediates; p_cur != NULL; p_cur = p_cur->p_next) {
             int cid = 0;
-
+			state = 0;
+			
             err = at_tok_scanf(p_cur->line, "%d%d", &cid, &state);
-            if (err != 2 || cid != pdp)
-                continue;
+            if (cid == pdp)
+                break;
+			else if(state)
+				state = 0;
         }
         safe_at_response_free(p_response);
 
@@ -762,9 +755,12 @@ static int requestQueryDataCall(UCHAR  *pConnectionStatus, int curIpFamily) {
 
     for (p_cur = p_response->p_intermediates; p_cur != NULL; p_cur = p_cur->p_next)
     {
+		state = 0;
         err = at_tok_scanf(p_cur->line, "%d%d", &cid, &state);
-        if (err != 2 || cid != pdp)
-            continue;
+        if (cid == pdp)
+            break;
+		else if(state)
+			state = 0;
     }
     safe_at_response_free(p_response);
 
@@ -801,6 +797,7 @@ static int requestGetIPAddress(PROFILE_T *profile, int curIpFamily) {
     ATLine *p_cur = NULL;
     int pdp = profile->pdp;
     unsigned int v4Addr = 0;
+    unsigned char *v4 = (unsigned char *)&v4Addr;
 
     (void)curIpFamily;
 
@@ -829,15 +826,16 @@ static int requestGetIPAddress(PROFILE_T *profile, int curIpFamily) {
             int addr[4] = {0, 0, 0, 0};
 
             sscanf(ipv4, "%d.%d.%d.%d", &addr[0], &addr[1], &addr[2], &addr[3]);
-            v4Addr = (addr[0]) | (addr[1]<<8) | (addr[2]<<16) | (addr[3]<<24);
+            v4[0] = addr[0];
+            v4[1] = addr[1];
+            v4[2] = addr[2];
+            v4[3] = addr[3];
             break;
         }
     }
 
 _error:
     if (v4Addr && profile->ipv4.Address != v4Addr) {
-        unsigned char *v4 = (unsigned char *)&v4Addr;
-
         profile->ipv4.Address = v4Addr;
         dbg_time("%s %d.%d.%d.%d", __func__, v4[0], v4[1], v4[2], v4[3]);    
     }

@@ -219,7 +219,7 @@ int at_tok_scanf(const char *in_line, const char *fmt, ...)
     if (!in_line)
         return 0;
 
-    strncpy(s_line, in_line, sizeof(s_line));
+    strncpy(s_line, in_line, sizeof(s_line) - 1);
 
     va_start(ap, fmt);
 

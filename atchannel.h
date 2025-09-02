@@ -73,7 +73,7 @@ typedef struct {
  */
 typedef void (*ATUnsolHandler)(const char *s, const char *sms_pdu);
 
-int at_open(int fd, ATUnsolHandler h);
+int at_open(int fd, ATUnsolHandler h, int proxy);
 void at_close();
 
 /* This callback is invoked on the command thread.

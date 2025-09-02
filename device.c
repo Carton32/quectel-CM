@@ -1,18 +1,14 @@
-/******************************************************************************
-  @file    device.c
-  @brief   QMI device dirver.
+/*
+    Copyright 2025 Quectel Wireless Solutions Co.,Ltd
 
-  DESCRIPTION
-  Connectivity Management Tool for USB network adapter of Quectel wireless cellular modules.
+    Quectel hereby grants customers of Quectel a license to use, modify,
+    distribute and publish the Software in binary form provided that
+    customers shall have no right to reverse engineer, reverse assemble,
+    decompile or reduce to source code form any portion of the Software. 
+    Under no circumstances may customers modify, demonstrate, use, deliver 
+    or disclose any portion of the Software in source code form.
+*/
 
-  INITIALIZATION AND SEQUENCING REQUIREMENTS
-  None.
-
-  ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
-  Quectel Wireless Solution Proprietary and Confidential.
-  ---------------------------------------------------------------------------
-******************************************************************************/
 #include <unistd.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -43,6 +39,9 @@
 #define CM_MAX_PATHLEN 256
 
 #define CM_INVALID_VAL (~((int)0))
+
+static int RDNIS_MODEL = 0;
+
 /* get first line from file 'fname'
  * And convert the content into a hex number, then return this number */
 static int file_get_value(const char *fname, int base)
@@ -94,7 +93,7 @@ static int dir_get_child(const char *dirname, char *buff, unsigned bufsize, cons
             continue;
         if (prefix && strlen(prefix) && strncmp(entptr->d_name, prefix, strlen(prefix)))
             continue;
-        snprintf(buff, bufsize, "%s", entptr->d_name);
+        snprintf(buff, bufsize, "%.31s", entptr->d_name);
         break;
     }
     closedir(dirptr);
@@ -190,7 +189,7 @@ static void query_usb_interface_info(char *path, struct usb_interface_info *p) {
                 break;
             n--;
         }
-        strncpy(p->driver, &driver[n+1], sizeof(p->driver));
+        strncpy(p->driver, &driver[n+1], sizeof(p->driver) - 1);
     }
 
     path[offset] = '\0';
@@ -342,6 +341,7 @@ BOOL qmidevice_detect(char *qmichannel, char *usbnet_adapter, unsigned bufsize, 
             if (profile->usb_dev.idVendor == 0x2c7c) { //Quectel
                 switch (profile->usb_dev.idProduct) { //EC200U
                 case 0x0901: //EC200U
+                case 0x0902: //EC200D
                 case 0x8101: //RG801H
                     atIntf = 2;
                 break;
@@ -349,9 +349,19 @@ BOOL qmidevice_detect(char *qmichannel, char *usbnet_adapter, unsigned bufsize, 
                     atIntf = 4;
                 break;
                 case 0x6026: //EC200T
+                case 0x6005: //EC200A
                 case 0x6002: //EC200S
+                case 0x6001: //EC100Y
                     atIntf = 3;
                 break;
+
+                case 0x6007: //EG915Q\EG800Q
+                    if(RDNIS_MODEL == 1)
+                        atIntf = 5;
+                    else
+                        atIntf = 3;
+                break;
+
                 default:
                    dbg_time("unknow at interface for USB idProduct:%04x\n", profile->usb_dev.idProduct);
                 break;
@@ -393,30 +403,83 @@ error:
 }
 
 int mhidevice_detect(char *qmichannel, char *usbnet_adapter, PROFILE_T *profile) {
-    if (!access("/sys/class/net/pcie_mhi0", F_OK))
-        strcpy(usbnet_adapter, "pcie_mhi0");
-    else if (!access("/sys/class/net/rmnet_mhi0", F_OK))
-        strcpy(usbnet_adapter, "rmnet_mhi0");
-    else {
-        dbg_time("qmidevice_detect failed");
-        goto error;
+    struct dirent* ent = NULL;
+    DIR *pDir;
+    const char *rootdir_mhi[] = {"/sys/bus/mhi_q/devices", "/sys/bus/mhi/devices", NULL};
+    int i = 0;
+    char path[256];
+    int find = 0;
+
+    while (rootdir_mhi[i]) {
+        const char *rootdir = rootdir_mhi[i++];
+
+        pDir = opendir(rootdir);
+        if (!pDir) {
+            if (errno != ENOENT)
+                    dbg_time("opendir %s failed: %s", rootdir, strerror(errno));
+            continue;
+        }
+
+        while ((ent = readdir(pDir)) != NULL)  {
+            char netcard[32] = {'\0'};
+            char devname[32] = {'\0'};
+            int software_interface = SOFTWARE_QMI;
+            char *pNode = NULL;
+
+            pNode = strstr(ent->d_name, "_IP_HW0"); //0306_00.01.00_IP_HW0
+            if (!pNode)
+                continue;
+
+            snprintf(path, sizeof(path), "%s/%.32s/net", rootdir, ent->d_name);
+            dir_get_child(path, netcard, sizeof(netcard), NULL);
+            if (!netcard[0])
+                continue;
+
+            if (usbnet_adapter[0] && strcmp(netcard, usbnet_adapter)) //not '-i x'
+                continue;
+
+            if (!strcmp(rootdir, "/sys/bus/mhi/devices")) {
+                snprintf(path, sizeof(path), "%s/%.13s_IPCR", rootdir, ent->d_name); // 13 is sizeof(0306_00.01.00)
+                if (!access(path, F_OK)) {
+                    /* we also need 'cat /dev/mhi_0306_00.01.00_pipe_14' to enable rmnet as like USB's DTR 
+                         or will get error 'requestSetEthMode QMUXResult = 0x1, QMUXError = 0x46' */
+                    sprintf(usbnet_adapter, "%s", netcard);
+                    sprintf(qmichannel, "qrtr-%d", 3); // 3 is sdx modem's node id
+                    profile->software_interface = SOFTWARE_QRTR;
+                    find = 1;
+                    break;
+                }
+                continue;
+            }
+
+            snprintf(path, sizeof(path), "%s/%.13s_IPCR", rootdir, ent->d_name);
+            if (access(path, F_OK)) {
+                snprintf(path, sizeof(path), "%s/%.13s_QMI0", rootdir, ent->d_name);
+                if (access(path, F_OK)) {
+                    snprintf(path, sizeof(path), "%s/%.13s_MBIM", rootdir, ent->d_name);
+                    if (!access(path, F_OK))
+                        software_interface = SOFTWARE_MBIM;
+                }
+            }
+            if (access(path, F_OK))
+                continue;
+
+            strncat(path, "/mhi_uci_q", sizeof(path)-1);
+            dir_get_child(path, devname, sizeof(devname), NULL);
+            if (!devname[0])
+                continue;      
+
+            sprintf(usbnet_adapter, "%s", netcard);
+            sprintf(qmichannel, "/dev/%s", devname);
+            profile->software_interface = software_interface;
+            find = 1;
+            break;
+        }
+
+        closedir(pDir);
     }
 
-    if (!access("/dev/mhi_MBIM", F_OK)) {
-        strcpy(qmichannel, "/dev/mhi_MBIM");
-        profile->software_interface = SOFTWARE_MBIM;
-    }
-    else if (!access("/dev/mhi_QMI0", F_OK)) {
-        strcpy(qmichannel, "/dev/mhi_QMI0");
-        profile->software_interface = SOFTWARE_QMI;
-    }
-    else {
-        goto error;
-    }
-
-    return 1;
-error:
-    return 0;
+    return find;
 }
 
 int atdevice_detect(char *atchannel, char *usbnet_adapter, PROFILE_T *profile) {
@@ -463,8 +526,10 @@ int get_driver_type(PROFILE_T *profile)
         }
     }
     else if (profile->usb_intf.bInterfaceClass == USB_CLASS_WIRELESS_CONTROLLER) {
-        if (profile->usb_intf.bInterfaceSubClass == 1 && profile->usb_intf.bInterfaceProtocol == 3)
+        if (profile->usb_intf.bInterfaceSubClass == 1 && profile->usb_intf.bInterfaceProtocol == 3) {
+            RDNIS_MODEL = 1;//Some modules in RNDIS mode the usb port definition is different, adding a marker bit to distinguish.
             return SOFTWARE_ECM_RNDIS_NCM;
+        }
     }
 
     dbg_time("%s unknow bInterfaceClass=%d, bInterfaceSubClass=%d", __func__,
