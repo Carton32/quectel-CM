@@ -20,6 +20,10 @@
 
 #include "util.h"
 #include "QMIThread.h"
+
+// Use dhclient instead of udhcpc
+#define USE_DHCLIENT
+
 extern int ql_get_netcard_carrier_state(const char *devname);
 
 static __inline in_addr_t qmi2addr(uint32_t __x) {
@@ -59,6 +63,7 @@ static void ql_set_mtu(const char *ifname, int ifru_mtu) {
     }
 }
 
+#ifndef USE_DHCLIENT
 static int ifc_get_addr(const char *name, in_addr_t *addr)
 {
     int inet_sock;
@@ -79,6 +84,7 @@ static int ifc_get_addr(const char *name, in_addr_t *addr)
     close(inet_sock);
     return ret;
 }
+#endif
 
 static short ifc_get_flags(const char *ifname)
 {
@@ -112,13 +118,16 @@ static void ifc_set_state(const char *ifname, int state) {
     ql_system(shell_cmd);
 }
 
+#ifndef USE_DHCLIENT
 static int ql_netcard_ipv4_address_check(const char *ifname, in_addr_t ip) {
     in_addr_t addr = 0;
 
     ifc_get_addr(ifname, &addr);
     return addr == ip;
 }
+#endif
 
+#ifndef USE_DHCLIENT
 static int ql_raw_ip_mode_check(const char *ifname, uint32_t ip) {
     int fd;
     char raw_ip[128];
@@ -152,6 +161,7 @@ static int ql_raw_ip_mode_check(const char *ifname, uint32_t ip) {
     close(fd);
     return mode_change;
 }
+#endif
 
 static void* udhcpc_thread_function(void* arg) {
     FILE * udhcpc_fp;
@@ -179,7 +189,6 @@ static void* udhcpc_thread_function(void* arg) {
     return NULL;
 }
 
-//#define USE_DHCLIENT
 #ifdef USE_DHCLIENT
 static int dhclient_alive = 0;
 #endif
@@ -540,7 +549,7 @@ void udhcpc_start(PROFILE_T *profile) {
         pthread_attr_setdetachstate(&udhcpc_thread_attr, PTHREAD_CREATE_DETACHED);
 
 #ifdef USE_DHCLIENT
-            snprintf(udhcpc_cmd, sizeof(udhcpc_cmd), "dhclient -4 -d --no-pid %s", ifname);
+            snprintf(udhcpc_cmd, sizeof(udhcpc_cmd), "dhclient -4 -d -q --no-pid %s", ifname);
             dhclient_alive++;
 #else
             if (access("/usr/share/udhcpc/default.script", X_OK)
@@ -673,7 +682,7 @@ set_ipv6:
 #endif
 #else
 #ifdef USE_DHCLIENT
-        snprintf(udhcpc_cmd, sizeof(udhcpc_cmd), "dhclient -6 -d --no-pid %s",  ifname);
+        snprintf(udhcpc_cmd, sizeof(udhcpc_cmd), "dhclient -6 -d -q --no-pid %s",  ifname);
         dhclient_alive++;
 #else
         /*
@@ -716,7 +725,7 @@ void udhcpc_stop(PROFILE_T *profile) {
 
 #ifdef USE_DHCLIENT
     if (dhclient_alive) {
-        system("killall dhclient");
+        if (system("killall dhclient")) {};
         dhclient_alive = 0;
     }
 #endif
