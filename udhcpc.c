@@ -22,6 +22,8 @@
 #include <arpa/inet.h>
 #include <endian.h>
 
+#define USE_DHCLIENT
+
 #include "util.h"
 #include "QMIThread.h"
 extern int ql_get_netcard_carrier_state(const char *devname);
@@ -63,27 +65,6 @@ static void ql_set_mtu(const char *ifname, int ifru_mtu) {
     }
 }
 
-static int ifc_get_addr(const char *name, in_addr_t *addr)
-{
-    int inet_sock;
-    struct ifreq ifr;
-    int ret = 0;
-
-    inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
-
-    ifc_init_ifr(name, &ifr);
-    if (addr != NULL) {
-        ret = ioctl(inet_sock, SIOCGIFADDR, &ifr);
-        if (ret < 0) {
-            *addr = 0;
-        } else {
-            *addr = ((struct sockaddr_in*) &ifr.ifr_addr)->sin_addr.s_addr;
-        }
-    }
-    close(inet_sock);
-    return ret;
-}
-
 static short ifc_get_flags(const char *ifname)
 {
     int inet_sock;
@@ -102,6 +83,29 @@ static short ifc_get_flags(const char *ifname)
         close(inet_sock);
     }
 
+    return ret;
+}
+
+#ifdef USE_DHCLIENT
+#else
+static int ifc_get_addr(const char *name, in_addr_t *addr)
+{
+    int inet_sock;
+    struct ifreq ifr;
+    int ret = 0;
+
+    inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+    ifc_init_ifr(name, &ifr);
+    if (addr != NULL) {
+        ret = ioctl(inet_sock, SIOCGIFADDR, &ifr);
+        if (ret < 0) {
+            *addr = 0;
+        } else {
+            *addr = ((struct sockaddr_in*) &ifr.ifr_addr)->sin_addr.s_addr;
+        }
+    }
+    close(inet_sock);
     return ret;
 }
 
@@ -148,6 +152,7 @@ static int ql_raw_ip_mode_check(const char *ifname, uint32_t ip) {
     close(fd);
     return mode_change;
 }
+#endif
 
 static void* udhcpc_thread_function(void* arg) {
     FILE * udhcpc_fp;
@@ -175,7 +180,6 @@ static void* udhcpc_thread_function(void* arg) {
     return NULL;
 }
 
-//#define USE_DHCLIENT
 #ifdef USE_DHCLIENT
 static int dhclient_alive = 0;
 #endif
@@ -542,7 +546,7 @@ void udhcpc_start(PROFILE_T *profile) {
         pthread_attr_setdetachstate(&udhcpc_thread_attr, PTHREAD_CREATE_DETACHED);
 
 #ifdef USE_DHCLIENT
-            snprintf(udhcpc_cmd, sizeof(udhcpc_cmd), "dhclient -4 -d --no-pid %s", ifname);
+            snprintf(udhcpc_cmd, sizeof(udhcpc_cmd), "dhclient -4 -d -q --no-pid %s", ifname);
             dhclient_alive++;
 #else
             if (access("/usr/share/udhcpc/default.script", X_OK)
@@ -642,7 +646,7 @@ set_ipv6:
 #endif
 #else
 #ifdef USE_DHCLIENT
-        snprintf(udhcpc_cmd, sizeof(udhcpc_cmd), "dhclient -6 -d --no-pid %s",  ifname);
+        snprintf(udhcpc_cmd, sizeof(udhcpc_cmd), "dhclient -6 -d -q --no-pid %s",  ifname);
         dhclient_alive++;
 #else
         /*
@@ -685,7 +689,7 @@ void udhcpc_stop(PROFILE_T *profile) {
 
 #ifdef USE_DHCLIENT
     if (dhclient_alive) {
-        system("killall dhclient");
+        if (system("killall dhclient")) {};
         dhclient_alive = 0;
     }
 #endif
